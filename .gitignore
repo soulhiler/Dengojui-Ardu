@@ -1,0 +1,19 @@
+# Секреты
+xiao_cam_stream/secrets.h
+camera_ip.txt
+
+# Python
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Portable arduino-cli (скачивается вручную)
+tools/arduino-cli/
+
+# Логи
+tools/_tel_err.txt
+tools/_tel_out.txt
+
+Thumbs.db
+Desktop.ini

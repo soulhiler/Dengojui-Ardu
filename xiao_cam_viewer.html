@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>XIAO CAM — просмотр</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; max-width: 720px; }
+    label { display: block; margin-top: 12px; font-weight: 600; }
+    input { width: 100%; max-width: 320px; padding: 8px; font-size: 16px; margin-top: 4px; }
+    button { margin-top: 10px; padding: 10px 16px; font-size: 16px; cursor: pointer; }
+    img { display: block; margin-top: 16px; max-width: 100%; height: auto; border: 1px solid #ccc; background: #111; min-height: 120px; }
+    .hint { color: #555; font-size: 14px; margin-top: 8px; }
+    code { background: #f4f4f4; padding: 2px 6px; }
+    .warn { background: #fff3cd; border: 1px solid #e0c040; padding: 10px; margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <h2>XIAO ESP32-S3 Sense</h2>
+  <div class="warn">
+    <b>Браузер Cursor:</b> страница на <code>127.0.0.1</code> часто <b>блокирует</b> картинку с <code>192.168…</code>.
+    Запусти в терминале проекта:<br />
+    <code>py -3 tools\xiao_cam_proxy.py ТВОЙ_IP</code><br />
+    и открой <a href="http://127.0.0.1:8898/">http://127.0.0.1:8898/</a> — видео пойдёт через прокси.
+  </div>
+  <p class="hint">Прямой режим (телефон / обычный Chrome): IP из Serial (<code>WiFi OK, IP:</code>) или <code>http://xiao-cam.local/</code></p>
+  <label for="ip">IP платы</label>
+  <input id="ip" type="text" placeholder="например 192.168.1.105" autocomplete="off" />
+  <div>
+    <button type="button" id="btnVideo">Запустить видео</button>
+    <button type="button" id="btnShot">Один кадр</button>
+  </div>
+  <img id="view" alt="камера" />
+  <p class="hint">Видео: <code>/stream</code> · кадр: <code>/capture</code></p>
+  <script>
+    (function () {
+      const img = document.getElementById("view");
+      const ipEl = document.getElementById("ip");
+      function base() {
+        const ip = ipEl.value.trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
+        if (!ip) {
+          alert("Введи IP (например 192.168.0.42)");
+          return null;
+        }
+        return "http://" + ip;
+      }
+      document.getElementById("btnVideo").onclick = function () {
+        const b = base();
+        if (!b) return;
+        img.src = b + "/stream";
+      };
+      document.getElementById("btnShot").onclick = function () {
+        const b = base();
+        if (!b) return;
+        img.src = b + "/capture?t=" + Date.now();
+      };
+      const q = new URLSearchParams(location.search).get("ip");
+      if (q) {
+        ipEl.value = q;
+        img.src = "http://" + q.replace(/^https?:\/\//, "").replace(/\/$/, "") + "/stream";
+      }
+    })();
+  </script>
+</body>
+</html>
