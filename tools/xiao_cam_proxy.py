@@ -5,6 +5,8 @@
 Запуск (ПК в той же Wi-Fi, что и плата):
   py -3 tools/xiao_cam_proxy.py 192.168.1.50
 
+Или из корня репозитория (Windows): .\\tools\\start_xiao_cam_proxy.ps1
+
 Или впиши IP в файл camera_ip.txt в корне проекта (одна строка, без #).
 
 Без IP прокси всё равно поднимается на 8898 — откроется подсказка (нет ERR_CONNECTION_REFUSED).
@@ -35,6 +37,27 @@ def load_ip_from_file(root: Path) -> str | None:
         if line and not line.startswith("#"):
             return line
     return None
+
+
+def _telemetry_mic_hint(cam_ip: str) -> str:
+    """Короткая строка из GET /telemetry платы (mic_ok, mic_tcp_listen) для подсказки при отказе TCP :81."""
+    try:
+        conn = http.client.HTTPConnection(cam_ip, 80, timeout=4)
+        conn.request("GET", "/telemetry", headers={"Host": cam_ip, "Connection": "close"})
+        resp = conn.getresponse()
+        raw = resp.read(262144)
+        conn.close()
+        if resp.status != 200:
+            return "HTTP /telemetry → %s" % resp.status
+        obj = json.loads(raw.decode("utf-8", errors="replace"))
+        keys = ("fw_version", "fw_build", "mic_hw", "mic_ok", "mic_tcp_listen", "mic_tcp_port", "ctrl_mic")
+        parts = []
+        for k in keys:
+            if k in obj:
+                parts.append("%s=%s" % (k, obj[k]))
+        return ("; ".join(parts) if parts else "нет полей mic_* в JSON")
+    except Exception as e:
+        return "не удалось прочитать /telemetry: %s" % e
 
 
 def load_mic_tcp_port_from_file(root: Path) -> int:
@@ -144,14 +167,18 @@ def main() -> int:
             try:
                 upstream = socket.create_connection((cam_ip, mic_tcp_port), timeout=10)
             except OSError as e:
+                snap = _telemetry_mic_hint(cam_ip)
                 hint = (
                     "Прокси не достучался до платы по TCP для микрофона (порт %d, IP %s).\n"
                     "Ошибка: %s\n\n"
-                    "Что сделать: пересоберите и прошейте xiao_cam_stream (ESP_I2S + TCP PCM), "
-                    "в Serial после Wi‑Fi должны быть строки «mic: PDM OK» и «mic: TCP PCM on :81 listening=1». "
-                    "Порт можно сменить: py -3 tools/xiao_cam_proxy.py --mic-port 81 <IP> "
+                    "Обычно это значит: на плате никто не слушает порт (WinError 10061 = отказ в подключении). "
+                    "Тогда в прошивке не поднялся PDM (mic_ok=0) или старая сборка без TCP :81.\n"
+                    "Снимок с платы: %s\n\n"
+                    "Что сделать: прошейте актуальный xiao_cam_stream (ESP_I2S, плата XIAO ESP32S3 Sense). "
+                    "В Serial (115200) после Wi‑Fi должны быть «mic: PDM OK» и «mic: TCP PCM on :81 listening=1». "
+                    "В Arduino: Tools → PSRAM «OPI». Порт PCM: py -3 tools/xiao_cam_proxy.py --mic-port 81 <IP> "
                     "или вторая строка в camera_ip.txt.\n"
-                ) % (mic_tcp_port, cam_ip, e)
+                ) % (mic_tcp_port, cam_ip, e, snap)
                 err = hint.encode("utf-8", errors="replace")
                 self.send_response(502)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -195,12 +222,14 @@ def main() -> int:
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+  <meta http-equiv="Pragma" content="no-cache"/>
   <title>XIAO — видео и микрофон</title>
   <style>
     body { font-family: system-ui, sans-serif; background:#0f1419; color:#e6edf3; margin:0; padding:16px; }
     h1 { font-size:1.1rem; margin:0 0 8px 0; }
     .meta { color:#8b949e; font-size:0.85rem; margin-bottom:12px; }
-    .vid { max-width:100%; width:min(960px,100%); height:auto; border:1px solid #30363d; border-radius:8px; background:#000; }
+    .vid { max-width:100%; width:min(1680px,100%); height:auto; border:1px solid #30363d; border-radius:8px; background:#000; }
     .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:12px 0; }
     button { cursor:pointer; padding:8px 14px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#e6edf3; font:inherit; }
     button:hover { border-color:#58a6ff; color:#58a6ff; }
@@ -211,14 +240,22 @@ def main() -> int:
 <body>
   <h1>XIAO CAM</h1>
   <div class="meta">Плата <code>""" + esc + """</code> · MJPEG <code>/stream</code> · PCM <code>/mic_s16</code> (16 kHz mono)</div>
-  <p><img class="vid" src="/stream" alt="камера" decoding="async"/></p>
+  <p><img id="cam" class="vid" alt="камера" decoding="async"/></p>
   <div class="row">
+    <button type="button" id="btnReload">Перезапустить видео</button>
     <button type="button" id="btnMic">Включить звук с микрофона</button>
     <span id="micSt"></span>
   </div>
   <p><a href="/capture">один кадр</a> · <a href="/telemetry">телеметрия</a></p>
 <script>
 (function () {
+  var cam = document.getElementById("cam");
+  document.getElementById("btnReload").addEventListener("click", function () {
+    cam.src = "/stream?_=" + Date.now();
+  });
+  cam.addEventListener("error", function () {
+    cam.src = "/stream?_=" + Date.now();
+  });
   var btn = document.getElementById("btnMic");
   var micSt = document.getElementById("micSt");
   var ctx = null;
@@ -281,6 +318,7 @@ def main() -> int:
       ctx = null;
     });
   });
+  cam.src = "/stream?_=" + Date.now();
 })();
 </script>
 </body>
@@ -289,6 +327,7 @@ def main() -> int:
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(data)
@@ -620,6 +659,22 @@ def main() -> int:
         )
         if cam_ip:
             print("Открой: http://127.0.0.1:%d/  (камера %s)" % (args.port, cam_ip))
+            hint = _telemetry_mic_hint(cam_ip)
+            print("Плата /telemetry (mic): %s" % hint, file=sys.stderr, flush=True)
+            try:
+                c2 = http.client.HTTPConnection(cam_ip, 80, timeout=3)
+                c2.request(
+                    "GET",
+                    "/control?cam=1&mic=1",
+                    headers={"Host": cam_ip, "Connection": "close"},
+                )
+                r2 = c2.getresponse()
+                r2.read(8192)
+                c2.close()
+                if r2.status == 200:
+                    print("GET /control?cam=1&mic=1 → OK", file=sys.stderr, flush=True)
+            except Exception as e:
+                print("GET /control?cam=1&mic=1 (опционально): %s" % e, file=sys.stderr, flush=True)
         else:
             print("Открой: http://127.0.0.1:%d/  (режим без IP камеры)" % args.port)
         print("Телеметрия: http://127.0.0.1:%d/telemetry" % args.port)

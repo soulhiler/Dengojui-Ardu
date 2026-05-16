@@ -15,5 +15,11 @@ tools/arduino-cli/
 tools/_tel_err.txt
 tools/_tel_out.txt
 
+# Android
+android/**/build/
+android/**/.gradle/
+android/**/local.properties
+android/**/.idea/
+
 Thumbs.db
 Desktop.ini

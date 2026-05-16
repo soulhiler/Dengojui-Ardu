@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XIAO Robot</string>
+    <string name="hint_ip">IP платы (например 192.168.9.17)</string>
+    <string name="connect">Подключить</string>
+    <string name="disconnect_session">Отключить</string>
+    <string name="motor_stop">Стоп моторы</string>
+    <string name="mic_on">Звук вкл</string>
+    <string name="mic_off">Звук выкл</string>
+</resources>

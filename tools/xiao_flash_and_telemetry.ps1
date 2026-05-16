@@ -3,15 +3,24 @@
 .SYNOPSIS
   Найти XIAO ESP32-S3 по USB, прошить xiao_cam_stream (PSRAM=OPI), поднять телеметрию HTTP :8897.
 
+  Частые сбои прошивки:
+  1) COM занят (Serial Monitor, терминал Cursor, другой py/arduino) — PermissionError / «port is busy».
+     Скрипт по умолчанию несколько раз повторяет upload с паузой.
+  2) arduino-cli board list не называет плату XIAO, а даёт «ESP32 Family Device» (fqbn esp32_family) при
+     нативном USB ESP32-S3 (VID 0x303A, PID 0x1001). Раньше авто-поиск такой порт пропускал — теперь он учитывается.
+
 .EXAMPLE
   .\tools\xiao_flash_and_telemetry.ps1
   .\tools\xiao_flash_and_telemetry.ps1 -Port COM7
   .\tools\xiao_flash_and_telemetry.ps1 -SkipTelemetry
+  .\tools\xiao_flash_and_telemetry.ps1 -UploadRetries 15 -UploadRetryDelaySec 5
 #>
 param(
   [string] $Port = "",
   [switch] $SkipTelemetry,
-  [int] $HttpPort = 8897
+  [int] $HttpPort = 8897,
+  [int] $UploadRetries = 8,
+  [int] $UploadRetryDelaySec = 4
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,6 +60,22 @@ function Get-XiaoPortFromCli() {
       }
     }
   }
+  # Нативный USB ESP32-S3 (Seeed XIAO и др.): CLI часто показывает только esp32_family, не XIAO_ESP32S3.
+  foreach ($dp in $data.detected_ports) {
+    if (-not $dp.port) { continue }
+    $props = $dp.port.properties
+    if (-not $props) { continue }
+    $vid = [string]$props.vid
+    $pid = [string]$props.pid
+    if ($vid -ne "0x303A" -or $pid -ne "0x1001") { continue }
+    if (-not $dp.matching_boards) { continue }
+    foreach ($b in $dp.matching_boards) {
+      if ($b.fqbn -eq "esp32:esp32:esp32_family") {
+        Write-Host "Обнаружен ESP32-S3 USB-JTAG (VID ${vid} PID ${pid}) на $($dp.port.address) — используем для загрузки XIAO/S3."
+        return $dp.port.address
+      }
+    }
+  }
   return $null
 }
 
@@ -69,9 +94,22 @@ Write-Host "Сборка $sketch ..."
 & $cli compile --fqbn $fqbn $sketch
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "Загрузка на $p ..."
-& $cli upload -p $p --fqbn $fqbn $sketch
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-Host "Загрузка на $p (до $UploadRetries попыток при занятом COM)..."
+$uploadOk = $false
+for ($i = 1; $i -le $UploadRetries; $i++) {
+  & $cli upload -p $p --fqbn $fqbn $sketch
+  if ($LASTEXITCODE -eq 0) {
+    $uploadOk = $true
+    break
+  }
+  if ($i -lt $UploadRetries) {
+    Write-Warning "Попытка $i / $UploadRetries не удалась (код $LASTEXITCODE). Закрой Serial Monitor / монитор порта в Cursor и другие программы с COM. Повтор через ${UploadRetryDelaySec}s..."
+    Start-Sleep -Seconds $UploadRetryDelaySec
+  }
+}
+if (-not $uploadOk) {
+  Write-Error "Загрузка не удалась после $UploadRetries попыток. Освободи $p или укажи другой -Port."
+}
 
 Write-Host "Готово: прошивка залита на $p"
 

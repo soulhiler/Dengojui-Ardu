@@ -3,14 +3,22 @@
 Сбор телеметрии XIAO: с --http по умолчанию приоритет Wi‑Fi → USB (провод) → BLE, затем устаревшие снимки.
 (компактный JSON в GATT, см. xiao_cam_stream.ino). Закрой Serial Monitor — COM занят одним клиентом.
 
-Переменная окружения XIAO_CAM_TELEMETRY_URL — URL снимка (по умолчанию http://xiao-cam.local/telemetry).
+Переменные окружения:
+  XIAO_CAM_TELEMETRY_URL — полный URL снимка (приоритетнее файла с IP).
+  XIAO_BOARD_IP — только IP платы в LAN (если нет URL выше): подставится http://IP/telemetry.
+
+На Windows имя xiao-cam.local часто не резолвится: положите в корень репозитория или в tools/
+файл camera_ip.txt (одна строка: IPv4 платы) или запустите с --board-ip 192.168.x.x.
 
 Примеры:
   py -3 tools/xiao_serial_telemetry.py --port COM5
   py -3 tools/xiao_serial_telemetry.py --port COM5 --log telemetry.ndjson
   py -3 tools/xiao_serial_telemetry.py --port COM5 --pretty
   py -3 tools/xiao_serial_telemetry.py --port COM5 --http 8897
-    → http://127.0.0.1:8897/ (режим --mode auto: Wi‑Fi → USB → BLE)
+    → UI: http://127.0.0.1:8897/live (корень / редиректит на /live; Chrome кэширует только /)
+    → проверка версии: http://127.0.0.1:8897/api/ui-meta
+  py -3 tools/xiao_serial_telemetry.py --http 8897 --board-ip 192.168.1.50
+    → опрос http://192.168.1.50/telemetry (удобно, если mDNS не работает)
   py -3 tools/xiao_serial_telemetry.py --http 8897 --mode serial --no-wifi --no-ble
     → только USB
 """
@@ -58,32 +66,61 @@ USB_READER_DIAG_LOCK = threading.Lock()
 # GROUP_ORDER и groupOf() могут расходиться (разные Unicode-дефисы) и строки не попадут в таблицу.
 WIFI_GROUP_LABEL = "Wi-Fi"
 
-# Краткий вид: только главные поля (порядок — как в таблице)
-CORE_TELEM_KEYS: tuple[str, ...] = (
-    "uptime_ms",
-    "reset_reason",
-    "led_mode",
-    "fw_build",
-    "fw_version",
-    "chip_model",
-    "chip_revision",
-    "cpu_mhz",
-    "heap_free",
-    "heap_min",
-    "psram_free_esp",
-    "wifi_status",
-    "wifi_disc_reason",
-    "wifi_ip",
-    "wifi_rssi",
-    "wifi_ssid",
-    "chip_temp_c",
-    "ble_adv_name",
-    "ble_clients",
-    "mic_rms",
-    "mic_dbfs",
-    "cam_frames_stream",
-    "cam_captures",
+# Краткий вид: 10 полей — порядок, ключ JSON, русская подпись, расшифровка (подсказка).
+CORE_TELEM_MAIN: tuple[tuple[str, str, str], ...] = (
+    (
+        "uptime_ms",
+        "Время с перезагрузки",
+        "uptime_ms — сколько миллисекунд MCU работает с последнего сброса (не календарные часы).",
+    ),
+    (
+        "fw_version",
+        "Версия прошивки",
+        "fw_version — человекочитаемый номер сборки; рядом в полном JSON есть fw_build (счётчик).",
+    ),
+    (
+        "wifi_status",
+        "Wi‑Fi: статус",
+        "wifi_status — текстовое состояние STA (например WL_CONNECTED); по коду см. wifi_status_code.",
+    ),
+    (
+        "wifi_ssid",
+        "Имя сети (SSID)",
+        "wifi_ssid — к какой точке доступа подключена плата в режиме клиента (STA).",
+    ),
+    (
+        "wifi_ip",
+        "IP в сети",
+        "wifi_ip — адрес платы в вашей LAN; по нему же открываются /telemetry и веб-камера.",
+    ),
+    (
+        "wifi_rssi",
+        "Сигнал Wi‑Fi (RSSI)",
+        "wifi_rssi — мощность сигнала в dBm (обычно от −30 до −90; чем ближе к нулю, тем сильнее).",
+    ),
+    (
+        "heap_free",
+        "Свободная куча (SRAM)",
+        "heap_free — свободная внутренняя RAM для malloc в байтах; мало свободного — риск нестабильности.",
+    ),
+    (
+        "psram_free_esp",
+        "Свободная PSRAM",
+        "psram_free_esp — свободная внешняя PSRAM (байты), у Sense обычно под буферы камеры/потока.",
+    ),
+    (
+        "cam_frames_stream",
+        "Кадров MJPEG всего",
+        "cam_frames_stream — сколько JPEG-кадров уже отдали по /stream с момента запуска (накопительный счётчик).",
+    ),
+    (
+        "mic_dbfs",
+        "Уровень микрофона (dBFS)",
+        "mic_dbfs — громкость с PDM в децибелах относительно полной шкалы; тише ≈ отрицательные значения.",
+    ),
 )
+
+CORE_TELEM_KEYS: tuple[str, ...] = tuple(row[0] for row in CORE_TELEM_MAIN)
 
 
 def _filter_core_telemetry(obj: dict) -> dict:
@@ -99,6 +136,54 @@ def _normalize_wifi_url(url: str) -> str:
     if "/telemetry" not in u:
         u = u.rstrip("/") + "/telemetry"
     return u
+
+
+def _looks_like_ipv4(token: str) -> bool:
+    parts = token.strip().split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(0 <= int(x) <= 255 for x in parts)
+    except ValueError:
+        return False
+
+
+def _discover_board_ip_from_files() -> str | None:
+    """Ищет IPv4 в camera_ip.txt / board_ip.txt / xiao_ip.txt рядом со скриптом или в cwd."""
+    names = ("camera_ip.txt", "board_ip.txt", "xiao_ip.txt")
+    here = Path(__file__).resolve()
+    roots = (here.parent.parent, here.parent, Path.cwd())
+    for root in roots:
+        for name in names:
+            p = root / name
+            try:
+                raw = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in raw.splitlines():
+                line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                token = line.split()[0]
+                if _looks_like_ipv4(token):
+                    return token
+    return None
+
+
+def resolve_telemetry_wifi_url(cli_wifi_url: str | None, cli_board_ip: str | None) -> str:
+    """Цепочка: --wifi-url → XIAO_CAM_TELEMETRY_URL → --board-ip / XIAO_BOARD_IP → файлы → xiao-cam.local."""
+    if cli_wifi_url:
+        return _normalize_wifi_url(cli_wifi_url)
+    env_full = os.environ.get("XIAO_CAM_TELEMETRY_URL", "").strip()
+    if env_full:
+        return _normalize_wifi_url(env_full)
+    bip = (cli_board_ip or "").strip() or os.environ.get("XIAO_BOARD_IP", "").strip()
+    if bip:
+        return _normalize_wifi_url("http://" + bip + "/telemetry")
+    discovered = _discover_board_ip_from_files()
+    if discovered:
+        return _normalize_wifi_url("http://" + discovered + "/telemetry")
+    return _normalize_wifi_url("http://xiao-cam.local/telemetry")
 
 
 def _telemetry_channel_ru(via: str) -> str:
@@ -157,9 +242,30 @@ def _merge_telemetry_unlocked(port: str, baud: int) -> dict:
         "telemetry_note": "Нет свежих данных: опрос Wi‑Fi → USB Serial → BLE (компакт).",
         "telemetry_via": "",
         "telemetry_channel_ru": "нет данных",
+        "proxy_hint": "Если COM недоступен, а xiao-cam.local не открывается (Windows): "
+        "запустите с --board-ip IP_платы или положите camera_ip.txt с IP в корень репозитория; "
+        "для BLE: py -3 -m pip install bleak.",
         "usb_port": port,
         "usb_baud": baud,
     }
+
+
+def _board_ip_for_control(port: str, baud: int) -> str | None:
+    """IP платы из свежей телеметрии (для GET /board/control → плата /control)."""
+    with TELEM_LOCK:
+        d = _merge_telemetry_unlocked(port, baud)
+    ip = d.get("wifi_ip")
+    if isinstance(ip, str):
+        t = ip.strip()
+        if t and t not in ("0.0.0.0",):
+            return t
+    bip = os.environ.get("XIAO_BOARD_IP", "").strip()
+    if bip and _looks_like_ipv4(bip):
+        return bip
+    discovered = _discover_board_ip_from_files()
+    if discovered:
+        return discovered
+    return None
 
 
 def _kbd_wants_brief() -> bool:
@@ -265,93 +371,324 @@ def _ble_reader_thread(name_sub: str, char_uuid: str) -> None:
     asyncio.run(main())
 
 
-def _dashboard_html(port: int, com: str, mode_line: str) -> str:
+def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) -> str:
     core_keys_js = json.dumps(list(CORE_TELEM_KEYS), ensure_ascii=False)
+    core_titles_js = json.dumps({row[0]: row[1] for row in CORE_TELEM_MAIN}, ensure_ascii=False)
+    core_hints_js = json.dumps({row[0]: row[2] for row in CORE_TELEM_MAIN}, ensure_ascii=False)
+    script_mtime = str(int(Path(__file__).stat().st_mtime))
     return f"""<!DOCTYPE html>
+<!-- ui-build: {ui_session_rev} mtime={script_mtime} path=/live -->
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
-  <title>XIAO — USB телеметрия</title>
+  <meta name="ui-session-rev" content="{ui_session_rev}" />
+  <meta name="ui-script-mtime" content="{script_mtime}" />
+  <title>Тлм Монеткожуй</title>
   <style>
     :root {{
-      --bg: #0f1419;
-      --panel: #1a2332;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --accent: #58a6ff;
-      --ok: #3fb950;
-      --err: #f85149;
+      --bg: #0a0e14;
+      --bg2: #111822;
+      --panel: #151d2b;
+      --panel2: #1c2738;
+      --text: #f0f3f6;
+      --muted: #8b9cb3;
+      --accent: #5cadff;
+      --accent-dim: #3d7ab8;
+      --ok: #3ddc84;
+      --err: #ff6b6b;
+      --led-on: #2ea043;
+      --led-off: #c93c37;
+      --ring: rgba(92, 173, 255, 0.35);
     }}
     * {{ box-sizing: border-box; }}
     html, body {{ height: 100%; margin: 0; }}
     body {{
-      font-family: ui-sans-serif, system-ui, sans-serif;
-      background: var(--bg);
+      font-family: "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2840 0%, var(--bg) 45%);
       color: var(--text);
       display: flex;
       flex-direction: column;
     }}
-    header {{
+    .app-header {{
       flex: 0 0 auto;
-      padding: 10px 14px;
-      background: var(--panel);
-      border-bottom: 1px solid #30363d;
+      padding: 14px 16px 12px;
+      background: linear-gradient(180deg, var(--panel2) 0%, var(--panel) 100%);
+      border-bottom: 1px solid #2a3548;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.35);
     }}
-    h1 {{ font-size: 1.05rem; margin: 0 0 4px 0; }}
-    .sub {{ color: var(--muted); font-size: 0.8rem; line-height: 1.35; }}
-    #status {{ font-size: 0.78rem; margin-top: 6px; }}
-    #status.ok {{ color: var(--ok); }}
-    #status.err {{ color: var(--err); }}
-    #toolbar {{ margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }}
+    .app-header__top {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+    }}
+    .brand h1 {{
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0 0 6px 0;
+      background: linear-gradient(90deg, #e6edf3, #8ec8ff);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }}
+    .brand .sub {{
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.45;
+      margin: 0;
+      max-width: 52ch;
+    }}
+    .brand code {{
+      font-size: 0.85em;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid #30363d;
+    }}
+    .conn-wrap {{
+      flex: 0 0 auto;
+      min-width: 108px;
+      padding: 10px 12px;
+      text-align: center;
+      border-radius: 12px;
+      border: 1px solid #30363d;
+      background: rgba(0,0,0,0.25);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }}
+    .conn-wrap.linked {{
+      border-color: rgba(61, 220, 132, 0.45);
+      box-shadow: 0 0 0 1px rgba(61, 220, 132, 0.12), 0 0 24px rgba(61, 220, 132, 0.15);
+    }}
+    .conn-wrap.nolink {{
+      border-color: rgba(255, 107, 107, 0.35);
+      box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.08);
+    }}
+    .conn-led {{
+      width: 26px;
+      height: 26px;
+      margin: 0 auto 8px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.2);
+      box-shadow:
+        inset 0 2px 8px rgba(0,0,0,0.5),
+        0 0 16px rgba(0,0,0,0.4);
+      transition: background 0.25s, box-shadow 0.25s, transform 0.2s;
+    }}
+    .conn-wrap.linked .conn-led {{
+      transform: scale(1.02);
+    }}
+    .conn-led.on {{
+      background: radial-gradient(circle at 32% 28%, #a8ffc4, var(--led-on) 52%, #0d3d1a);
+      box-shadow:
+        inset 0 -3px 8px rgba(0,0,0,0.35),
+        0 0 20px rgba(46, 160, 67, 0.65);
+    }}
+    .conn-led.off {{
+      background: radial-gradient(circle at 32% 28%, #ffc9c9, var(--led-off) 52%, #3d1010);
+      box-shadow:
+        inset 0 -3px 8px rgba(0,0,0,0.35),
+        0 0 16px rgba(201, 60, 55, 0.45);
+    }}
+    .conn-label {{
+      font-size: 0.65rem;
+      line-height: 1.25;
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }}
+    .conn-wrap.linked .conn-label {{ color: var(--ok); }}
+    .conn-wrap.nolink .conn-label {{ color: var(--err); }}
+    .conn-channel {{
+      margin-top: 4px;
+      font-size: 0.72rem;
+      line-height: 1.25;
+      color: #b8c9dc;
+      font-weight: 500;
+      word-break: break-word;
+    }}
+    .conn-wrap.nolink .conn-channel {{ color: #d4a08b; }}
+    #status {{
+      font-size: 0.76rem;
+      margin-top: 10px;
+      padding: 6px 10px;
+      border-radius: 8px;
+      background: rgba(0,0,0,0.2);
+      border: 1px solid #2a3548;
+    }}
+    #status.ok {{ color: #9fe8bf; }}
+    #status.err {{ color: #ffb4b4; }}
+    .app-header__controls {{
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      gap: 12px;
+    }}
+    .toolbar-left {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      flex: 1 1 auto;
+    }}
     #btnCore {{
       cursor: pointer;
       font: inherit;
-      font-size: 0.82rem;
-      padding: 6px 12px;
-      border-radius: 6px;
-      border: 1px solid #30363d;
-      background: #21262d;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid #3d4f66;
+      background: linear-gradient(180deg, #2a3548, #1e2838);
       color: var(--text);
     }}
-    #btnCore:hover {{ border-color: var(--accent); color: var(--accent); }}
+    #btnCore:hover {{
+      border-color: var(--accent);
+      color: #cfe8ff;
+      box-shadow: 0 0 0 3px var(--ring);
+    }}
     #btnCore.active {{
-      background: #1f3d2f;
-      border-color: var(--ok);
+      background: linear-gradient(180deg, #1a3d2e, #132a22);
+      border-color: rgba(61, 220, 132, 0.55);
       color: var(--ok);
     }}
-    .hint {{ font-size: 0.72rem; color: var(--muted); }}
+    .hint {{ font-size: 0.72rem; color: var(--muted); max-width: 36ch; }}
+    .dev-rail-wrap {{
+      flex: 1 1 280px;
+      margin-left: auto;
+      min-width: min(100%, 320px);
+    }}
+    .dev-rail-label {{
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 6px;
+      font-weight: 600;
+    }}
+    #devBar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }}
+    .dev-btn {{
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 10px 10px 8px;
+      min-width: 76px;
+      border-radius: 10px;
+      border: 1px solid #3d4f66;
+      background: linear-gradient(180deg, #222d3f, #1a2332);
+      color: #d8e4f5;
+      transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+    }}
+    .dev-btn:hover:not([disabled]) {{
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--ring);
+      transform: translateY(-1px);
+    }}
+    .dev-btn:active:not([disabled]) {{ transform: translateY(0); }}
+    .dev-btn[disabled] {{ opacity: 0.42; cursor: not-allowed; filter: grayscale(0.3); }}
+    .dev-btn .dev-lamp {{
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.2);
+      background: #2d3849;
+      box-shadow: inset 0 2px 6px rgba(0,0,0,0.55);
+    }}
+    .dev-btn .dev-lamp.on {{
+      background: radial-gradient(circle at 35% 28%, #c8ffd4, #2ea043 55%, #0f3d18);
+      box-shadow: 0 0 14px rgba(46, 160, 67, 0.55);
+    }}
+    .dev-btn .dev-lamp.off {{
+      background: radial-gradient(circle at 35% 28%, #ffd0d0, #a83232 55%, #2a0c0c);
+      box-shadow: 0 0 10px rgba(248, 81, 73, 0.35);
+    }}
+    .dev-btn.hidden {{ display: none !important; }}
     #scroll {{
       flex: 1 1 auto;
       overflow: auto;
-      padding: 12px 14px 20px;
-      max-width: 1100px;
+      padding: 16px 16px 28px;
+      max-width: 1120px;
       width: 100%;
       margin: 0 auto;
     }}
-    #panels {{ display: flex; flex-direction: column; gap: 12px; }}
+    #panels {{ display: flex; flex-direction: column; gap: 14px; }}
     .card {{
-      background: var(--panel);
-      border-radius: 8px;
-      padding: 10px 12px;
-      border: 1px solid #30363d;
+      background: linear-gradient(165deg, var(--panel2) 0%, var(--panel) 100%);
+      border-radius: 12px;
+      padding: 14px 16px;
+      border: 1px solid #2a3548;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.25);
     }}
     .card h2 {{
-      font-size: 0.72rem;
+      font-size: 0.7rem;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.12em;
       color: var(--accent);
-      margin: 0 0 8px 0;
-      font-weight: 600;
+      margin: 0 0 12px 0;
+      font-weight: 700;
+    }}
+    .card--core h2 {{ margin-bottom: 14px; }}
+    .core-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+      gap: 10px;
+    }}
+    .core-tile {{
+      background: rgba(0,0,0,0.28);
+      border: 1px solid #2f3d52;
+      border-radius: 10px;
+      padding: 12px 12px 10px;
+      min-height: 76px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }}
+    .core-tile-k {{
+      font-size: 0.72rem;
+      color: #dbe7f7;
+      font-weight: 700;
+      line-height: 1.25;
+      word-break: break-word;
+    }}
+    .core-tile-key {{
+      font-size: 0.58rem;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+      letter-spacing: 0.02em;
+      margin-top: 2px;
+    }}
+    .core-tile-v {{
+      font-size: 1.05rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: #f6f8fa;
+      line-height: 1.2;
+      word-break: break-word;
     }}
     table {{ width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.8rem; font-variant-numeric: tabular-nums; }}
-    td {{ padding: 3px 6px 3px 0; vertical-align: top; border-bottom: 1px solid #252d3a; }}
+    td {{ padding: 5px 8px 5px 0; vertical-align: top; border-bottom: 1px solid #252d3a; }}
     tr:last-child td {{ border-bottom: none; }}
     th.n, th.k, th.v {{
-      font-size: 0.72rem; font-weight: 600; color: #79c0ff; text-align: left;
-      padding: 4px 6px 6px 0; border-bottom: 1px solid #30363d; vertical-align: bottom;
+      font-size: 0.72rem; font-weight: 600; color: #8ec8ff; text-align: left;
+      padding: 6px 8px 8px 0; border-bottom: 1px solid #30363d; vertical-align: bottom;
     }}
     th.n {{ text-align: right; width: 3rem; padding-right: 8px; color: #58a6ff; }}
     th.k {{ width: 34%; }}
@@ -361,29 +698,58 @@ def _dashboard_html(port: int, com: str, mode_line: str) -> str:
     pre {{
       margin: 0;
       font-size: 0.68rem;
-      line-height: 1.4;
+      line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-all;
       max-height: min(38vh, 420px);
       overflow: auto;
-      color: #c9d1d9;
+      color: #c5d4e6;
     }}
   </style>
 </head>
 <body>
-  <header>
-    <h1>Телеметрия XIAO</h1>
-    <div class="sub">Приоритет: {mode_line}<br />
-      COM <code>{com}</code> · локальный UI <code>127.0.0.1:{port}</code> ·
-      опрос <code>/api/telemetry</code> каждые 0,5 с<br />
-      <span class="hint">Нет колонки «№»? Обнови вкладку с принудительным сбросом кэша (Ctrl+F5) и перезапусти скрипт телеметрии.</span></div>
-    <div id="toolbar">
-      <button type="button" id="btnCore" title="Только основные поля: MCU, память, Wi‑Fi, температура, камера">Основные</button>
-      <span class="hint">полный вид ↔ краткий (одна таблица)</span>
+  <header class="app-header">
+    <div class="app-header__top">
+      <div class="brand">
+        <h1>Тлм Монеткожуй</h1>
+        <p class="sub">Каналы: <strong>{mode_line}</strong><br />
+          Порт <code>{com}</code> · UI <code>127.0.0.1:{port}</code> · опрос API ~2 с (вкладка на паузе, если окно скрыто)</p>
+      </div>
+      <div class="conn-wrap nolink" id="connWrap" aria-live="polite">
+        <div class="conn-led off" id="connLed" role="img" aria-label="Связь с платой"></div>
+        <div class="conn-label" id="connLabel">ожидание</div>
+        <div class="conn-channel" id="connChannel"></div>
+      </div>
+    </div>
+    <div class="app-header__controls">
+      <div class="toolbar-left">
+        <button type="button" id="btnCore" title="10 ключевых полей плитками; полный JSON — кнопка ниже">Сводка (10)</button>
+        <span class="hint">Полный список полей — отключите «Сводка»</span>
+      </div>
+      <div class="dev-rail-wrap">
+        <div class="dev-rail-label">Периферия · нажми лампу</div>
+        <div id="devBar" aria-label="Управление по Wi‑Fi на плату">
+          <button type="button" class="dev-btn" data-ctrl="wifi" id="devWifi" title="Радио Wi‑Fi: вкл — без эко‑сна, выкл — энергосбережение. STA не отключается.">
+            <span class="dev-lamp on" aria-hidden="true"></span><span>Wi‑Fi</span>
+          </button>
+          <button type="button" class="dev-btn" data-ctrl="ble" id="devBle" title="Bluetooth LE — реклама">
+            <span class="dev-lamp on" aria-hidden="true"></span><span>BLE</span>
+          </button>
+          <button type="button" class="dev-btn" data-ctrl="cam" id="devCam" title="Камера: /stream и /capture">
+            <span class="dev-lamp on" aria-hidden="true"></span><span>Камера</span>
+          </button>
+          <button type="button" class="dev-btn" data-ctrl="mic" id="devMic" title="Микрофон TCP :81 и уровень">
+            <span class="dev-lamp on" aria-hidden="true"></span><span>Микрофон</span>
+          </button>
+        </div>
+      </div>
     </div>
     <div id="status" class="ok">ожидание…</div>
   </header>
   <div id="scroll">
+    <p class="hint" style="margin:0 0 12px 0;">Сессия UI <code>{ui_session_rev}</code> · mtime скрипта <code>{script_mtime}</code>
+      — проверка: <a href="/api/ui-meta" target="_blank" rel="noopener">/api/ui-meta</a> (путь к <code>.py</code> должен совпадать с консолью).
+      Chrome кэширует только <code>/</code>; интерфейс открывайте как <code>/live</code> (корень редиректит сюда).</p>
     <div id="usbWaitBanner" class="card" style="display:none;margin-bottom:12px;border-color:#f85149;">
       <h2 style="color:#f85149">Нет строки JSON с платы</h2>
       <pre id="usbWaitTxt" style="max-height:220px"></pre>
@@ -396,22 +762,44 @@ def _dashboard_html(port: int, com: str, mode_line: str) -> str:
   </div>
   <script>
     const CORE_KEYS = {core_keys_js};
+    const CORE_TITLES = {core_titles_js};
+    const CORE_HINTS = {core_hints_js};
     const elPanels = document.querySelector("#panels");
     const elRaw = document.querySelector("#raw");
     const elRawCard = document.querySelector("#rawCard");
     const elSt = document.querySelector("#status");
     const elBtnCore = document.querySelector("#btnCore");
-    let coreOnly = false;
+    const elDevBar = document.querySelector("#devBar");
+    const elConnWrap = document.querySelector("#connWrap");
+    const elConnLed = document.querySelector("#connLed");
+    const elConnLabel = document.querySelector("#connLabel");
+    const elConnChannel = document.querySelector("#connChannel");
+    let coreOnly = true;
+
+    function setConnState(linked, channelRu) {{
+      if (!elConnWrap || !elConnLed || !elConnLabel) return;
+      elConnWrap.classList.toggle("linked", linked);
+      elConnWrap.classList.toggle("nolink", !linked);
+      elConnLed.classList.toggle("on", linked);
+      elConnLed.classList.toggle("off", !linked);
+      elConnLabel.textContent = linked ? "есть связь" : "нет связи";
+      if (elConnChannel) {{
+        elConnChannel.textContent = linked
+          ? (channelRu || "канал неизвестен")
+          : ((channelRu || "").trim() || "нет данных с платы · Wi‑Fi / USB / BLE");
+      }}
+    }}
 
     const GROUP_ORDER = [
       "Прокси", "Система и MCU", "Память", "Flash и OTA", "{WIFI_GROUP_LABEL}",
-      "Bluetooth LE", "Точка доступа (AP)", "Камера", "Микрофон", "Датчики",
+      "Управление", "Bluetooth LE", "Точка доступа (AP)", "Камера", "Микрофон", "Датчики",
       "USB / диагностика", "Прочее"
     ];
     const GROUP_ORDER_SET = new Set(GROUP_ORDER);
 
     function groupOf(k) {{
-      if (k === "proxy_error" || k === "hint" || k === "camera_ip_txt") return "Прокси";
+      if (k === "proxy_error" || k === "hint" || k === "camera_ip_txt" || k === "proxy_hint") return "Прокси";
+      if (k.startsWith("ctrl_")) return "Управление";
       if (k === "chip_temp_c") return "Датчики";
       if (k.startsWith("ble_")) return "Bluetooth LE";
       if (k.startsWith("mic_")) return "Микрофон";
@@ -433,6 +821,10 @@ def _dashboard_html(port: int, com: str, mode_line: str) -> str:
 
     function esc(s) {{
       return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+    }}
+
+    function escAttr(s) {{
+      return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
     }}
 
     function fmtVal(v) {{
@@ -498,20 +890,20 @@ def _dashboard_html(port: int, com: str, mode_line: str) -> str:
     }}
 
     function renderCore(obj) {{
-      const buckets = assignBuckets(obj);
-      const rowIdx = rowIndexByKey(buckets);
       const rows = [];
       CORE_KEYS.forEach(function (k) {{
         if (Object.prototype.hasOwnProperty.call(obj, k)) {{
           rows.push({{ k: k, v: fmtVal(obj[k]) }});
         }}
       }});
-      let html = '<section class="card"><h2>Основные параметры</h2><table><thead><tr><th class="n">№</th><th class="k">Параметр</th><th class="v">Значение</th></tr></thead><tbody>';
+      let html = '<section class="card card--core"><h2>Сводка — 10 основных показателей</h2><div class="core-grid">';
       rows.forEach(function (r) {{
-        const num = rowIdx[r.k] != null ? String(rowIdx[r.k]) : "—";
-        html += '<tr><td class="n">' + num + '</td><td class="k">' + esc(r.k) + '</td><td class="v">' + esc(r.v) + '</td></tr>';
+        const title = (CORE_TITLES && CORE_TITLES[r.k]) ? CORE_TITLES[r.k] : r.k;
+        const hint = (CORE_HINTS && CORE_HINTS[r.k]) ? CORE_HINTS[r.k] : "";
+        html += '<div class="core-tile" title="' + escAttr(hint) + '"><div class="core-tile-k">' + esc(title) +
+          '</div><div class="core-tile-key">' + esc(r.k) + '</div><div class="core-tile-v">' + esc(r.v) + "</div></div>";
       }});
-      html += "</tbody></table></section>";
+      html += "</div></section>";
       elPanels.innerHTML = html;
       const slim = {{}};
       CORE_KEYS.forEach(function (k) {{
@@ -556,28 +948,141 @@ def _dashboard_html(port: int, com: str, mode_line: str) -> str:
       }}
     }}
 
+    elBtnCore.classList.add("active");
+    elBtnCore.textContent = "Сводка (10) ✓";
+
     elBtnCore.addEventListener("click", function () {{
       coreOnly = !coreOnly;
       elBtnCore.classList.toggle("active", coreOnly);
-      elBtnCore.textContent = coreOnly ? "Основные ✓" : "Основные";
+      elBtnCore.textContent = coreOnly ? "Сводка (10) ✓" : "Все поля";
     }});
 
+    function ctrlOn(v) {{
+      return v === 1 || v === true || v === "1";
+    }}
+
+    function syncDevBar(j) {{
+      if (!elDevBar) return;
+      const map = [
+        ["wifi", "ctrl_wifi", "devWifi"],
+        ["ble", "ctrl_ble", "devBle"],
+        ["cam", "ctrl_cam", "devCam"],
+        ["mic", "ctrl_mic", "devMic"]
+      ];
+      map.forEach(function (row) {{
+        const id = row[2];
+        const key = row[1];
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        const lamp = btn.querySelector(".dev-lamp");
+        if (id === "devBle") {{
+          btn.classList.toggle("hidden", j.ble_hw !== 1);
+        }}
+        if (id === "devMic") {{
+          btn.classList.toggle("hidden", j.mic_hw !== 1);
+        }}
+        if (btn.classList.contains("hidden")) {{
+          return;
+        }}
+        const raw = j[key];
+        const on = raw === undefined ? true : ctrlOn(raw);
+        if (lamp) {{
+          lamp.classList.toggle("on", on);
+          lamp.classList.toggle("off", !on);
+        }}
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+        btn.disabled = j.telemetry === "waiting_for_first_update" || j.usb === "waiting_for_first_json_line" || !j.wifi_ip;
+      }});
+    }}
+
+    if (elDevBar) {{
+      elDevBar.addEventListener("click", async function (ev) {{
+        const btn = ev.target.closest(".dev-btn");
+        if (!btn || btn.disabled || btn.classList.contains("hidden")) return;
+        const key = btn.getAttribute("data-ctrl");
+        if (!key) return;
+        const lamp = btn.querySelector(".dev-lamp");
+        const curOn = lamp && lamp.classList.contains("on");
+        const next = curOn ? 0 : 1;
+        try {{
+          const rac = new AbortController();
+          const rto = setTimeout(function () {{ rac.abort(); }}, 12000);
+          let r;
+          try {{
+            r = await fetch("/board/control?" + encodeURIComponent(key) + "=" + next + "&r=" + Date.now(), {{
+              cache: "no-store",
+              signal: rac.signal
+            }});
+          }} finally {{
+            clearTimeout(rto);
+          }}
+          const t = await r.text();
+          if (!r.ok) {{
+            elSt.textContent = "control: HTTP " + r.status + " " + t.slice(0, 200);
+            elSt.className = "err";
+            return;
+          }}
+          try {{
+            const o = JSON.parse(t);
+            if (o.ok !== 1 && o.ok !== "1") {{
+              elSt.textContent = "control: " + t.slice(0, 240);
+              elSt.className = "err";
+              return;
+            }}
+          }} catch (e2) {{}}
+          elSt.textContent = "команда отправлена " + new Date().toLocaleTimeString();
+          elSt.className = "ok";
+          setTimeout(function () {{ tick(); }}, 400);
+        }} catch (e) {{
+          elSt.textContent = "control: " + e;
+          elSt.className = "err";
+        }}
+      }});
+    }}
+
+    let tickBusy = false;
     async function tick() {{
+      if (tickBusy) return;
+      tickBusy = true;
+      const ac = new AbortController();
+      const to = setTimeout(function () {{ ac.abort(); }}, 10000);
       try {{
-        const r = await fetch("/api/telemetry?r=" + Date.now(), {{ cache: "no-store" }});
+        const r = await fetch("/api/telemetry?r=" + Date.now(), {{ cache: "no-store", signal: ac.signal }});
         if (!r.ok) throw new Error("HTTP " + r.status);
         const j = await r.json();
         render(j);
-        elSt.textContent = "обновлено " + new Date().toLocaleTimeString() + (coreOnly ? " · краткий вид" : "") +
-          (j.telemetry === "waiting_for_first_update" || j.usb === "waiting_for_first_json_line" ? " · ждём данные" : (" · канал: " + (j.telemetry_channel_ru || j.telemetry_via || "?")));
+        syncDevBar(j);
+        const waiting =
+          j.telemetry === "waiting_for_first_update" || j.usb === "waiting_for_first_json_line";
+        const linked = !waiting;
+        const ch = (j.telemetry_channel_ru || j.telemetry_via || "").trim();
+        setConnState(linked, ch);
+        elSt.textContent = "обновлено " + new Date().toLocaleTimeString() + (coreOnly ? " · сводка" : " · все поля") +
+          (waiting ? " · ждём данные" : (" · " + (ch || "?")));
         elSt.className = "ok";
       }} catch (e) {{
+        setConnState(false, String(e && e.message ? e.message : e));
         elSt.textContent = "ошибка: " + e;
         elSt.className = "err";
+      }} finally {{
+        clearTimeout(to);
+        tickBusy = false;
       }}
     }}
+    let pollMs = 2000;
+    let pollTimer = null;
+    function schedulePoll() {{
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(function () {{
+        if (document.hidden) return;
+        tick();
+      }}, pollMs);
+    }}
+    document.addEventListener("visibilitychange", function () {{
+      if (!document.hidden) tick();
+    }});
     tick();
-    setInterval(tick, 500);
+    schedulePoll();
   </script>
 </body>
 </html>"""
@@ -710,16 +1215,51 @@ def _run_http_mode(
     if start_ble:
         parts.append("BLE")
     mode_line = " → ".join(parts) if parts else "(каналы выключены)"
+    http_ui_rev = str(int(time.time()))
 
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
         def log_message(self, fmt, *args):
-            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+            line = fmt % args
+            if (
+                "GET /api/telemetry" in line
+                or "GET /favicon.ico" in line
+                or "GET /live" in line
+                or "GET /api/ui-meta" in line
+            ):
+                return
+            sys.stderr.write("%s - %s\n" % (self.address_string(), line))
 
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
             try:
+                if path == "/favicon.ico":
+                    self.send_response(204)
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    return
+                if path == "/api/ui-meta":
+                    p = Path(__file__).resolve()
+                    st = p.stat()
+                    meta = {
+                        "telemetry_script": str(p),
+                        "script_mtime": int(st.st_mtime),
+                        "http_boot_id": http_ui_rev,
+                        "core_telem_keys": list(CORE_TELEM_KEYS),
+                        "dashboard_title": "Тлм Монеткожуй",
+                        "open_here": "/live?boot=" + http_ui_rev,
+                    }
+                    body = json.dumps(meta, ensure_ascii=False).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if path == "/api/telemetry":
                     with TELEM_LOCK:
                         payload = _merge_telemetry_unlocked(port, baud)
@@ -742,12 +1282,71 @@ def _run_http_mode(
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(body)
+                elif path == "/board/control" or path.startswith("/board/control"):
+                    import urllib.request
+
+                    qs = ""
+                    if "?" in self.path:
+                        qs = self.path.split("?", 1)[1]
+                        qs = qs.split("&r=", 1)[0].split("&_=", 1)[0]
+                    board_ip = _board_ip_for_control(port, baud)
+                    if not board_ip:
+                        err = json.dumps(
+                            {"ok": 0, "error": "no_board_ip", "hint": "Нужен wifi_ip в телеметрии (плата в сети)."},
+                            ensure_ascii=False,
+                        ).encode("utf-8")
+                        self.send_response(503)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(err)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(err)
+                        return
+                    url = "http://%s/control?%s" % (board_ip, qs)
+                    try:
+                        req = urllib.request.Request(url, headers={"Connection": "close", "Accept": "application/json"})
+                        with urllib.request.urlopen(req, timeout=4.0) as resp:
+                            body = resp.read()
+                        ct = resp.headers.get("Content-Type") or "application/json; charset=utf-8"
+                    except Exception as e:
+                        err = json.dumps({"ok": 0, "error": repr(e)}, ensure_ascii=False).encode("utf-8")
+                        self.send_response(502)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(err)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(err)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", ct.split(";")[0].strip() + "; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(body)
                 elif path == "/":
-                    html = _dashboard_html(http_port, port, mode_line).encode("utf-8")
+                    self.send_response(307)
+                    self.send_header("Location", "/live?boot=" + http_ui_rev)
+                    self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    return
+                elif path == "/live":
+                    html = _dashboard_html(http_port, port, mode_line, http_ui_rev).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(html)))
-                    self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                    self.send_header(
+                        "Cache-Control",
+                        "private, no-store, no-cache, max-age=0, must-revalidate, s-maxage=0",
+                    )
                     self.send_header("Pragma", "no-cache")
                     self.send_header("Expires", "0")
                     self.send_header("Connection", "close")
@@ -768,11 +1367,11 @@ def _run_http_mode(
                 except Exception:
                     pass
 
-    class Srv(socketserver.ThreadingMixIn, socketserver.TCPServer):
-        # True + два запуска на Windows иногда дают «два слушателя» на один порт и
-        # браузер получает ERR_EMPTY_RESPONSE / сброс. Один процесс — один bind.
+    # Один поток обработки HTTP: на Windows ThreadingMixIn + частый опрос вкладки давали «зависание»
+    # (TIME_WAIT, исчерпание потоков/очереди). Для одного локального UI этого достаточно.
+    class Srv(socketserver.TCPServer):
         allow_reuse_address = False
-        daemon_threads = True
+        request_queue_size = 512
 
         def server_bind(self) -> None:
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
@@ -783,7 +1382,14 @@ def _run_http_mode(
                     pass
             super().server_bind()
 
-    print("Телеметрия → http://127.0.0.1:%d/  (%s)" % (http_port, mode_line), file=sys.stderr)
+    print("Тлм Монеткожуй → открой в Chrome: http://127.0.0.1:%d/live?boot=%s" % (http_port, http_ui_rev), file=sys.stderr)
+    print("Проверка версии (JSON): http://127.0.0.1:%d/api/ui-meta" % http_port, file=sys.stderr)
+    print("Файл скрипта: %s" % Path(__file__).resolve(), file=sys.stderr)
+    print(
+        "Подсказка: встроенная вкладка Cursor иногда «висит» на localhost — "
+        "откройте тот же URL в Chrome/Edge или Ctrl+Shift+P → Simple Browser: Show.",
+        file=sys.stderr,
+    )
     if start_serial:
         print("USB Serial %s @ %d — фон." % (port, baud), file=sys.stderr)
     if start_wifi:
@@ -900,8 +1506,14 @@ def main() -> int:
     )
     ap.add_argument(
         "--wifi-url",
-        default=os.environ.get("XIAO_CAM_TELEMETRY_URL", "http://xiao-cam.local/telemetry"),
-        help="URL GET /telemetry с платы (переменная XIAO_CAM_TELEMETRY_URL)",
+        default=None,
+        help="URL GET /telemetry с платы (иначе XIAO_CAM_TELEMETRY_URL, --board-ip, camera_ip.txt, xiao-cam.local)",
+    )
+    ap.add_argument(
+        "--board-ip",
+        default=None,
+        metavar="IP",
+        help="IP платы в LAN → http://IP/telemetry (если не задан --wifi-url и XIAO_CAM_TELEMETRY_URL)",
     )
     ap.add_argument("--wifi-poll", type=float, default=0.75, metavar="SEC", help="Интервал опроса Wi‑Fi")
     ap.add_argument("--no-wifi", action="store_true", help="Не опрашивать Wi‑Fi")
@@ -938,13 +1550,14 @@ def main() -> int:
         if not start_wifi and not start_serial and not start_ble:
             print("Ошибка: все каналы выключены (--mode / --no-*)", file=sys.stderr)
             return 2
+        wifi_url = resolve_telemetry_wifi_url(args.wifi_url, args.board_ip)
         return _run_http_mode(
             args.port,
             args.baud,
             args.http,
             args.log,
             args.mode,
-            args.wifi_url,
+            wifi_url,
             args.wifi_poll,
             start_wifi,
             start_serial,

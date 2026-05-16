@@ -13,6 +13,8 @@
  * Красный у зарядки не программируется — смотри только жёлтый у USB.
  *
  * Телеметрия: каждые ~1.5 с в Serial и GET /telemetry — MCU, память, flash/OTA, Wi‑Fi, BLE (LE), PDM‑микрофон Sense, AP (BSS), камера, RTOS.
+ * Управление: GET /control?cam=0|1&mic=0|1&ble=0|1&wifi=0|1&drive=0|1 (wifi — эко‑сон радио).
+ * Привод: GET /drive?l=-255..255&r=...  или /drive?stop=1  (пины — drive_config.h).
  * Сбор на ПК (по умолчанию): Wi‑Fi GET /telemetry → USB Serial → BLE (компактный JSON в GATT). Скрипт: tools/xiao_serial_telemetry.py
  * Панель в одном окне: прокси http://127.0.0.1:8898/telemetry
  *
@@ -61,14 +63,15 @@
 // Пароль в secrets.h (не в git). Образец: secrets.h.example
 // В secrets.h можно задать #define XIAO_WIFI_SSID_1 / XIAO_WIFI_SSID_2 — точное имя сети с роутера (2.4 ГГц).
 #include "secrets.h"
+#include "xiao_drive.h"
 
 #ifndef XIAO_OTA_PASSWORD
 #define XIAO_OTA_PASSWORD ""
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 3u;
-static constexpr char kXiaoFwVersion[] = "1.0.3";
+static constexpr uint32_t kXiaoFwBuild = 9u;
+static constexpr char kXiaoFwVersion[] = "1.1.0";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -90,6 +93,14 @@ WebServer server(80);
 WiFiMulti wifiMulti;
 static bool gHttpServerStarted = false;
 static bool gArduinoOtaReady = false;
+
+/** Управление с GET /control?cam=0|1&mic=0|1&ble=0|1&wifi=0|1 (wifi: 1 — без эко‑сна радио, 0 — WIFI_PS_MAX_MODEM). */
+static volatile bool gCtrlCamEnabled = true;
+static volatile bool gCtrlMicEnabled = true;
+#if XIAO_TELEM_HAVE_BLE
+static volatile bool gCtrlBleAdvEnabled = true;
+#endif
+static volatile bool gCtrlWifiHiPower = true;
 
 static volatile uint32_t g_streamFrameCount = 0;
 static volatile uint32_t g_captureCount = 0;
@@ -252,12 +263,13 @@ static bool initCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.jpeg_quality = 12;
+  config.jpeg_quality = 8;
   config.fb_count = 1;
 
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      config.jpeg_quality = 10;
+      /* JPEG: меньше число = выше качество (0–63). 2 — почти максимум; 0–1 часто нестабильны / огромный битрейт. */
+      config.jpeg_quality = 2;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
@@ -283,8 +295,19 @@ static bool initCamera() {
     s->set_saturation(s, -2);
   }
   if (config.pixel_format == PIXFORMAT_JPEG) {
-    s->set_framesize(s, FRAMESIZE_QVGA);
-    s->set_quality(s, 14);
+    if (psramFound()) {
+      if (s->id.PID == OV3660_PID) {
+        s->set_framesize(s, FRAMESIZE_QXGA);
+        s->set_quality(s, 2);
+      } else {
+        /* OV2640 и др.: UXGA — типичный максимум разрешения; выше — только с другой матрицей. */
+        s->set_framesize(s, FRAMESIZE_UXGA);
+        s->set_quality(s, 2);
+      }
+    } else {
+      s->set_framesize(s, FRAMESIZE_SVGA);
+      s->set_quality(s, 6);
+    }
   }
   return true;
 }
@@ -300,6 +323,10 @@ static void micTcpTask(void * /*arg*/) {
     WiFiClient c = gMicTcpServer.available();
     if (!c) {
       vTaskDelay(pdMS_TO_TICKS(2));
+      continue;
+    }
+    if (!gCtrlMicEnabled) {
+      c.stop();
       continue;
     }
     gMicTcpServing = true;
@@ -344,6 +371,9 @@ static void telemetryMicInit() {
 /** Периодически обновляет mic_rms / mic_dbfs для телеметрии. */
 static void telemetryMicTick() {
 #if XIAO_TELEM_HAVE_PDM
+  if (!gCtrlMicEnabled) {
+    return;
+  }
   if (gMicTcpServing) {
     return;
   }
@@ -430,11 +460,16 @@ static void handleRoot() {
   html += ip;
   html += F("/</b></p>");
   html += F("<p>Видео (MJPEG):</p>");
-  html += F("<p><img src=\"/stream\" style=\"max-width:100%;height:auto;border:1px solid #0a0\"></p>");
-  html += F("<p>Снимок:</p>");
-  html += F("<p><img src=\"/capture\" style=\"max-width:100%;height:auto;border:1px solid #ccc\"></p>");
+  if (gCtrlCamEnabled) {
+    html += F("<p><img src=\"/stream\" style=\"max-width:100%;height:auto;border:1px solid #0a0\"></p>");
+    html += F("<p>Снимок:</p>");
+    html += F("<p><img src=\"/capture\" style=\"max-width:100%;height:auto;border:1px solid #ccc\"></p>");
+  } else {
+    html += F("<p><em>Камера выключена (GET /control?cam=1)</em></p>");
+  }
   html += F("<p><a href=\"/stream\">/stream</a> · <a href=\"/capture\">/capture</a> · <a href=\"/telemetry\">/telemetry</a></p>");
   html += F("<p><small>Mic PCM (TCP 81, s16le 16 kHz mono) — через прокси: <code>/mic_s16</code></small></p>");
+  html += F("<p><small>Привод: <code>/drive?l=0&r=0</code> · <code>/drive?stop=1</code> · пины <code>drive_config.h</code></small></p>");
   html += F("</body></html>");
   server.send(200, "text/html; charset=utf-8", html);
 }
@@ -442,6 +477,14 @@ static void handleRoot() {
 static void handleStream() {
   WiFiClient client = server.client();
   if (!client || !client.connected()) {
+    return;
+  }
+  if (!gCtrlCamEnabled) {
+    client.println(F("HTTP/1.1 503 Service Unavailable"));
+    client.println(F("Content-Type: text/plain; charset=utf-8"));
+    client.println(F("Connection: close"));
+    client.println();
+    client.println(F("camera disabled (GET /control?cam=1)"));
     return;
   }
 
@@ -486,6 +529,12 @@ static void handleStream() {
 }
 
 static void handleCapture() {
+  if (!gCtrlCamEnabled) {
+    server.sendHeader(F("Cache-Control"), F("no-store"));
+    server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+    server.send(503, "text/plain; charset=utf-8", "camera disabled (GET /control?cam=1)");
+    return;
+  }
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     server.send(500, "text/plain", "capture failed");
@@ -824,6 +873,17 @@ static String telemetryBuildJson() {
   telemetryAppendUInt(j, comma, "mic_hw", 0u);
 #endif
 
+  telemetryAppendUInt(j, comma, "ctrl_cam", gCtrlCamEnabled ? 1u : 0u);
+  telemetryAppendUInt(j, comma, "ctrl_mic", gCtrlMicEnabled ? 1u : 0u);
+#if XIAO_TELEM_HAVE_BLE
+  telemetryAppendUInt(j, comma, "ctrl_ble", gCtrlBleAdvEnabled ? 1u : 0u);
+#else
+  telemetryAppendUInt(j, comma, "ctrl_ble", 0u);
+#endif
+  telemetryAppendUInt(j, comma, "ctrl_wifi", gCtrlWifiHiPower ? 1u : 0u);
+
+  xiaoDriveAppendTelemetry(j, comma);
+
   const float tchip = temperatureRead();
   if (!isnan(tchip) && tchip > -40.0f && tchip < 130.0f) {
     telemetryAppendFloat(j, comma, "chip_temp_c", tchip);
@@ -882,6 +942,9 @@ static void telemetryBlePushIfDue() {
   if (!gBleTelemChr || !gBleStarted) {
     return;
   }
+  if (!gCtrlBleAdvEnabled) {
+    return;
+  }
   String s = telemetryBuildJsonBleCompact();
   if (s.length() > 500) {
     s.remove(499);
@@ -905,6 +968,113 @@ static void telemetryPrintSerialIfDue() {
   telemetryBlePushIfDue();
 #endif
 }
+
+static void applyWifiPsFromFlag() {
+  if (gCtrlWifiHiPower) {
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    WiFi.setSleep(false);
+  } else {
+    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+    WiFi.setSleep(true);
+  }
+}
+
+static void handleControl() {
+  if (server.hasArg("cam")) {
+    gCtrlCamEnabled = server.arg("cam").toInt() != 0;
+  }
+  if (server.hasArg("mic")) {
+    gCtrlMicEnabled = server.arg("mic").toInt() != 0;
+  }
+#if XIAO_TELEM_HAVE_BLE
+  if (server.hasArg("ble") && gBleInited) {
+    gCtrlBleAdvEnabled = server.arg("ble").toInt() != 0;
+    BLEAdvertising *adv = BLEDevice::getAdvertising();
+    if (adv) {
+      if (gCtrlBleAdvEnabled) {
+        BLEDevice::startAdvertising();
+      } else {
+        adv->stop();
+      }
+    }
+  }
+#endif
+  if (server.hasArg("wifi")) {
+    gCtrlWifiHiPower = server.arg("wifi").toInt() != 0;
+    applyWifiPsFromFlag();
+  }
+#if XIAO_DRIVE_ENABLE
+  if (server.hasArg("drive")) {
+    xiaoDriveSetEnabled(server.arg("drive").toInt() != 0);
+  }
+#endif
+
+  String j = F("{\"ok\":1,\"ctrl_cam\":");
+  j += gCtrlCamEnabled ? F("1") : F("0");
+  j += F(",\"ctrl_mic\":");
+  j += gCtrlMicEnabled ? F("1") : F("0");
+  j += F(",\"ctrl_wifi\":");
+  j += gCtrlWifiHiPower ? F("1") : F("0");
+#if XIAO_TELEM_HAVE_BLE
+  j += F(",\"ctrl_ble\":");
+  j += gCtrlBleAdvEnabled ? F("1") : F("0");
+#else
+  j += F(",\"ctrl_ble\":0");
+#endif
+#if XIAO_DRIVE_ENABLE
+  {
+    XiaoDriveState ds{};
+    xiaoDriveGetState(&ds);
+    j += F(",\"ctrl_drive\":");
+    j += ds.enabled ? F("1") : F("0");
+    j += F(",\"drive_watchdog\":");
+    j += ds.watchdog_stop ? F("1") : F("0");
+  }
+#else
+  j += F(",\"ctrl_drive\":0");
+#endif
+  j += F("}");
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(200, F("application/json; charset=utf-8"), j);
+}
+
+#if XIAO_DRIVE_ENABLE
+static void handleDrive() {
+  if (!server.hasArg("stop")) {
+    if (!server.hasArg("l") && !server.hasArg("r")) {
+      server.send(400, F("text/plain; charset=utf-8"),
+                    F("use /drive?l=&r= (-255..255) or /drive?stop=1"));
+      return;
+    }
+    const int l = server.hasArg("l") ? server.arg("l").toInt() : 0;
+    const int r = server.hasArg("r") ? server.arg("r").toInt() : l;
+    xiaoDriveSetLr(static_cast<int16_t>(l), static_cast<int16_t>(r));
+  } else {
+    xiaoDriveStop();
+  }
+  XiaoDriveState ds{};
+  xiaoDriveGetState(&ds);
+  String j = F("{\"ok\":1,\"cmd_l\":");
+  j += String(ds.cmd_l);
+  j += F(",\"cmd_r\":");
+  j += String(ds.cmd_r);
+  j += F(",\"enc_l\":");
+  j += String(ds.enc_l);
+  j += F(",\"enc_r\":");
+  j += String(ds.enc_r);
+  j += F(",\"us_cm\":");
+  j += String(ds.us_cm);
+  j += F(",\"bumper\":");
+  j += String(ds.bumper);
+  j += F(",\"watchdog\":");
+  j += ds.watchdog_stop ? F("1") : F("0");
+  j += F("}");
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(200, F("application/json; charset=utf-8"), j);
+}
+#endif
 
 static void handleTelemetry() {
   const String body = telemetryBuildJson();
@@ -970,12 +1140,24 @@ void setup() {
   }
   Serial.println("Camera OK");
 
+  xiaoDriveInit();
+
   telemetryMicInit();
+#if XIAO_TELEM_HAVE_PDM
+  if (!gMicOk) {
+    Serial.println(F("mic: повтор PDM после паузы (иногда I2S заводится только после камеры)…"));
+    delay(180);
+    gMicI2s.end();
+    telemetryMicInit();
+    if (!gMicOk) {
+      Serial.println(F("mic: PDM так и не поднялся — TCP :81 не будет; проверь XIAO Sense, core 3.x, меню PSRAM=OPI."));
+    }
+  }
+#endif
 
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("xiao-cam");
-  WiFi.setSleep(false);
-  esp_wifi_set_ps(WIFI_PS_NONE);
+  applyWifiPsFromFlag();
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
   // Быстрее находим известные AP; с внешней антенной обычно стабильнее по RSSI.
@@ -1043,6 +1225,10 @@ void setup() {
   server.on("/stream", HTTP_GET, handleStream);
   server.on("/capture", HTTP_GET, handleCapture);
   server.on("/telemetry", HTTP_GET, handleTelemetry);
+  server.on("/control", HTTP_GET, handleControl);
+#if XIAO_DRIVE_ENABLE
+  server.on("/drive", HTTP_GET, handleDrive);
+#endif
   server.begin();
   gHttpServerStarted = true;
 #if XIAO_TELEM_HAVE_PDM
@@ -1060,7 +1246,7 @@ void setup() {
   }
 #endif
   statusLedSet(StatusLed::Running);
-  Serial.println(F("HTTP server started (/) (/stream) (/capture) (/telemetry)"));
+  Serial.println(F("HTTP server started (/) (/stream) (/capture) (/telemetry) (/control) (/drive)"));
   Serial.println(F("Telemetry: JSON lines in Serial every 1.5s; snapshot GET /telemetry"));
 }
 
@@ -1070,6 +1256,7 @@ void loop() {
     ArduinoOTA.handle();
   }
   telemetryMicTick();
+  xiaoDriveTick();
   statusLedTick();
   telemetryPrintSerialIfDue();
   if (gHttpServerStarted) {
