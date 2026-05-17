@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-05-17 — Прошивка на железе + APK собран
+
+Плата подключена по USB — прошили и собрали APK здесь.
+
+- **Прошивка залита на плату** (COM5, FQBN `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`):
+  bootloader/partitions/app записаны, **hash verified**, hard-reset.
+- **Boot подтверждён по USB serial**: телеметрия идёт, видны новые поля
+  Фаз 2/3 — `cam_fail`, `spd_l`/`spd_r`, `drive_safety` (=0: сенсоры
+  инертны/не разведены), микрофон активен (`mic_dbfs≈-27`), `chip_temp≈59°C`.
+  Правки Фаз 1–3 работают на реальном железе (компиляция + базовый рантайм).
+- **Known-issue:** на idle (без stream-клиента) спам `cam_hal: FB-OVF`
+  (переполнение буфера кадров). **Не регрессия** — наш диф не трогал
+  `grab_mode`/`fb_count`; типовое поведение esp32-camera без потребителя
+  кадров. Проверить, что уходит при активном MJPEG/WiFi; кандидат на
+  DMA-стриминг (вывод из веб-анализа esp32-cam-fpv).
+- **Android APK собран:** поставлены JDK 17 (Temurin 17.0.19) + Android SDK
+  (cmdline-tools, `platform-35`, `build-tools;35.0.0`, `platform-tools`;
+  лицензии через hash-файлы; `local.properties` — gitignored).
+  `gradlew assembleDebug` → **BUILD SUCCESSFUL**, `app-debug.apk` 6.0 МБ.
+  Подтверждает Android-правки Фаз 1–3 (поле токена, reconnect/ошибки,
+  индикаторы сенсоров).
+- Снимает оговорку «прошивку/APK тут собрать нельзя» из ранних записей.
+  Тулчейн (`arduino-cli`/JDK/SDK) и `secrets.h` — вне git (gitignored).
+
+### Дальше (требует пользователя/железа)
+Runtime-проверки в WiFi: MJPEG/латентность (и `FB-OVF` под нагрузкой),
+cross-core I2S при `mic=0`, рефлекс «стоп», одометрия с моторами;
+разводка УЗ/бамперов; user-gated чистка git-истории (пароль).
+
+---
+
 ## 2026-05-17 — Верификация прошивки локально (arduino-cli)
 
 На машине нашлись Arduino IDE-ядро и Python — прошивку удалось собрать здесь.
