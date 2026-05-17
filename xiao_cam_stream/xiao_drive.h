@@ -15,6 +15,13 @@
 #ifndef DRIVE_PWM_CH_R
 #define DRIVE_PWM_CH_R 3
 #endif
+/* Дефолты на случай старого drive_config.h без этих ключей. */
+#ifndef DRIVE_ENC_DEBOUNCE_US
+#define DRIVE_ENC_DEBOUNCE_US 150
+#endif
+#ifndef DRIVE_US_STOP_CM
+#define DRIVE_US_STOP_CM 0
+#endif
 
 struct XiaoDriveState {
   bool hw_ok = false;
@@ -24,16 +31,26 @@ struct XiaoDriveState {
   int16_t cmd_r = 0;
   int32_t enc_l = 0;
   int32_t enc_r = 0;
+  int32_t spd_l = 0;  // тики/с
+  int32_t spd_r = 0;
   uint16_t us_cm = 0;
   uint8_t bumper = 0;
+  uint8_t safety = 0;  // бит0 = бампер, бит1 = УЗ-препятствие; !=0 → стоп
   uint32_t last_cmd_ms = 0;
 };
 
 static XiaoDriveState gDrive;
 static volatile int32_t gEncL = 0;
 static volatile int32_t gEncR = 0;
+static volatile uint32_t gEncTsL = 0;
+static volatile uint32_t gEncTsR = 0;
 
 static void IRAM_ATTR encIsrL() {
+  const uint32_t t = micros();
+  if (static_cast<uint32_t>(t - gEncTsL) < static_cast<uint32_t>(DRIVE_ENC_DEBOUNCE_US)) {
+    return;  // антидребезг: слишком близкий фронт
+  }
+  gEncTsL = t;
   if (digitalRead(DRIVE_ENC_L_A) == digitalRead(DRIVE_ENC_L_B)) {
     gEncL++;
   } else {
@@ -42,6 +59,11 @@ static void IRAM_ATTR encIsrL() {
 }
 
 static void IRAM_ATTR encIsrR() {
+  const uint32_t t = micros();
+  if (static_cast<uint32_t>(t - gEncTsR) < static_cast<uint32_t>(DRIVE_ENC_DEBOUNCE_US)) {
+    return;
+  }
+  gEncTsR = t;
   if (digitalRead(DRIVE_ENC_R_A) == digitalRead(DRIVE_ENC_R_B)) {
     gEncR++;
   } else {
@@ -84,7 +106,8 @@ static void driveMotorSignMag(uint8_t pwmPin, uint8_t dirPin, int16_t cmd) {
 #endif
 
 static void driveApplyMotors() {
-  if (!gDrive.enabled || gDrive.watchdog_stop) {
+  // safety != 0 перекрывает любые команды (рефлекс важнее клиента).
+  if (!gDrive.enabled || gDrive.watchdog_stop || gDrive.safety != 0) {
 #if XIAO_DRIVE_DRIVER_TB6612
     driveMotorTb6612(DRIVE_L_PWM, DRIVE_L_IN1, DRIVE_L_IN2, 0);
     driveMotorTb6612(DRIVE_R_PWM, DRIVE_R_IN1, DRIVE_R_IN2, 0);
@@ -215,7 +238,33 @@ static inline void xiaoDriveTick() {
   gDrive.enc_l = gEncL;
   gDrive.enc_r = gEncR;
 
-#if DRIVE_BUMPER_PIN_1 > 0 || DRIVE_BUMPER_PIN_2 > 0
+  const uint32_t now = millis();
+
+  // Скорость (тики/с) по интервалу ~100 мс.
+  static uint32_t s_spdMs = 0;
+  static int32_t s_spdEncL = 0;
+  static int32_t s_spdEncR = 0;
+  if (s_spdMs == 0) {
+    s_spdMs = now;
+    s_spdEncL = gDrive.enc_l;
+    s_spdEncR = gDrive.enc_r;
+  } else if (now - s_spdMs >= 100u) {
+    const int32_t dt = static_cast<int32_t>(now - s_spdMs);
+    gDrive.spd_l = (gDrive.enc_l - s_spdEncL) * 1000 / dt;
+    gDrive.spd_r = (gDrive.enc_r - s_spdEncR) * 1000 / dt;
+    s_spdMs = now;
+    s_spdEncL = gDrive.enc_l;
+    s_spdEncR = gDrive.enc_r;
+  }
+
+  // УЗ до оценки безопасности (троттлинг ~120 мс; pulseIn блокирует ≤25 мс).
+  static uint32_t s_usLast = 0;
+  if (DRIVE_US_ENABLE && (s_usLast == 0 || (now - s_usLast) > 120u)) {
+    s_usLast = now;
+    gDrive.us_cm = driveReadUltrasonicCm();
+  }
+
+  // Бампер: бит0 = пин1, бит1 = пин2.
   uint8_t b = 0;
 #if DRIVE_BUMPER_PIN_1 > 0
   if (digitalRead(DRIVE_BUMPER_PIN_1) == LOW) {
@@ -228,15 +277,29 @@ static inline void xiaoDriveTick() {
   }
 #endif
   gDrive.bumper = b;
+
+  // Рефлекс безопасности: латч пока есть препятствие, авто-сброс.
+  // Перекрывает команды клиента (см. driveApplyMotors). us_cm==0 — нет
+  // эха / вне диапазона, НЕ препятствие (иначе ложный стоп).
+  uint8_t safety = 0;
   if (b != 0) {
-    gDrive.cmd_l = 0;
-    gDrive.cmd_r = 0;
-    driveApplyMotors();
-    return;
+    safety |= 1u;
+  }
+#if DRIVE_US_ENABLE
+  if (DRIVE_US_STOP_CM > 0 && gDrive.us_cm > 0 &&
+      gDrive.us_cm <= static_cast<uint16_t>(DRIVE_US_STOP_CM)) {
+    safety |= 2u;
   }
 #endif
+  gDrive.safety = safety;
+  if (safety != 0) {
+    gDrive.cmd_l = 0;
+    gDrive.cmd_r = 0;
+    driveApplyMotors();  // gate и так даст 0; явный стоп для честной телеметрии
+    return;
+  }
 
-  const uint32_t now = millis();
+  // Watchdog: нет свежих /drive — стоп моторов.
   if (gDrive.enabled && (now - gDrive.last_cmd_ms) > static_cast<uint32_t>(DRIVE_WATCHDOG_MS)) {
     if (gDrive.cmd_l != 0 || gDrive.cmd_r != 0) {
       gDrive.watchdog_stop = true;
@@ -244,12 +307,6 @@ static inline void xiaoDriveTick() {
       gDrive.cmd_r = 0;
       driveApplyMotors();
     }
-  }
-
-  static uint32_t s_usLast = 0;
-  if (DRIVE_US_ENABLE && (now - s_usLast) > 120u) {
-    s_usLast = now;
-    gDrive.us_cm = driveReadUltrasonicCm();
   }
 }
 
@@ -290,8 +347,11 @@ static inline void xiaoDriveAppendTelemetry(String &j, bool &comma) {
   appendI("drive_cmd_r", gDrive.cmd_r);
   appendI("enc_l", gDrive.enc_l);
   appendI("enc_r", gDrive.enc_r);
+  appendI("spd_l", gDrive.spd_l);
+  appendI("spd_r", gDrive.spd_r);
   appendU("us_cm", gDrive.us_cm);
   appendU("bumper", gDrive.bumper);
+  appendU("drive_safety", gDrive.safety);
 }
 
 #else /* !XIAO_DRIVE_ENABLE */

@@ -27,10 +27,14 @@
 #define DRIVE_ENC_L_B 44  /* D7 */
 #define DRIVE_ENC_R_A 7   /* D8 */
 #define DRIVE_ENC_R_B 8   /* D9 */
+/** Антидребезг энкодера (мкс); 0 = выкл */
+#define DRIVE_ENC_DEBOUNCE_US 150
 
 #define DRIVE_US_TRIG 0
 #define DRIVE_US_ECHO 0
 #define DRIVE_US_ENABLE 0
+/** Рефлекс «стоп» при препятствии ближе X см (0 = только телеметрия) */
+#define DRIVE_US_STOP_CM 15
 
 #define DRIVE_BUMPER_PIN_1 0
 #define DRIVE_BUMPER_PIN_2 0

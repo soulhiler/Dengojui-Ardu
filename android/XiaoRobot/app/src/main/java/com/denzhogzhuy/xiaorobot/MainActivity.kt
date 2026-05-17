@@ -14,13 +14,21 @@ class MainActivity : AppCompatActivity() {
     private val mjpeg = MjpegStream(lifecycleScope, ::showFrame, ::setStatusPart)
     private val mic = MicPlayer(lifecycleScope, ::setStatusPart)
     private val drive = DriveClient(lifecycleScope, ::setStatusPart)
-    private val telemetry = TelemetryPoller(lifecycleScope) { ch, rssi, ssid ->
-        wifiInfo = "Wi‑Fi ch$ch · ${rssi} dBm · $ssid"
-        updateStatusLine()
-    }
+    private val telemetry = TelemetryPoller(
+        lifecycleScope,
+        onInfo = { ch, rssi, ssid ->
+            wifiInfo = "Wi‑Fi ch$ch · ${rssi} dBm · $ssid"
+            updateStatusLine()
+        },
+        onSensors = { s ->
+            sensorInfo = s
+            updateStatusLine()
+        },
+    )
 
     private var connected = false
     private var wifiInfo = ""
+    private var sensorInfo = ""
     private var micOn = false
     private var host: String = ""
 
@@ -90,6 +98,7 @@ class MainActivity : AppCompatActivity() {
         mic.stop()
         telemetry.stop()
         wifiInfo = ""
+        sensorInfo = ""
         motorInfo = ""
         if (host.isNotEmpty()) drive.stopSending(host)
         setStatusPart("отключено")
@@ -130,6 +139,7 @@ class MainActivity : AppCompatActivity() {
         val parts = listOfNotNull(
             statusLine.takeIf { it.isNotEmpty() },
             wifiInfo.takeIf { it.isNotEmpty() },
+            sensorInfo.takeIf { it.isNotEmpty() },
             motorInfo.takeIf { it.isNotEmpty() },
         )
         runOnUiThread {
