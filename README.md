@@ -25,6 +25,18 @@
 
 Скопируйте `xiao_cam_stream/secrets.h.example` → `xiao_cam_stream/secrets.h` (файл в `.gitignore`).
 
+## Безопасность
+
+- **Пароль Wi-Fi только в `xiao_cam_stream/secrets.h`** (в `.gitignore`); в коде — плейсхолдер.
+- **Включите pre-commit защиту от секретов** (один раз, из корня репо):
+
+  ```bash
+  git config core.hooksPath .githooks
+  ```
+
+  Хук `.githooks/pre-commit` блокирует коммит `secrets.h`, реального пароля в коде и ранее утёкшей строки.
+- **Инцидент:** ранее реальный Wi-Fi пароль попал в архив Cursor. Рабочее дерево очищено, но **строка остаётся в git-истории** до её перезаписи. Пароль на роутере считать скомпрометированным — **сменить**. Точный порядок чистки: [`docs/security-history-cleanup.md`](docs/security-history-cleanup.md).
+
 ## Прошивка
 
 - FQBN: `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`

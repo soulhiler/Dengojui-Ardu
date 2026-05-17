@@ -7,7 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.CoroutineScope
 import java.io.BufferedInputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -32,7 +31,9 @@ class MjpegStream(
                 try {
                     conn = (URL(url).openConnection() as HttpURLConnection).apply {
                         connectTimeout = 8000
-                        readTimeout = 0
+                        // Конечный таймаут: если плата отдала заголовки, но кадры
+                        // встали — не виснем, а переподключаемся (внешний цикл).
+                        readTimeout = 6000
                         requestMethod = "GET"
                     }
                     if (conn.responseCode != 200) {
@@ -82,7 +83,10 @@ class MjpegStream(
                 soi = indexOf(acc, 0xFF, 0xD8)
             }
             if (acc.size > 512 * 1024) {
-                acc = ByteArray(0)
+                // Не теряем кадр, который ещё дочитывается: оставляем хвост от
+                // последнего SOI; если маркера нет — сбрасываем накопившийся мусор.
+                val lastSoi = lastIndexOfSoi(acc)
+                acc = if (lastSoi >= 0) acc.copyOfRange(lastSoi, acc.size) else ByteArray(0)
             }
         }
     }
@@ -94,6 +98,18 @@ class MjpegStream(
                 return i
             }
             i++
+        }
+        return -1
+    }
+
+    /** Индекс последнего SOI (0xFF 0xD8) или -1. */
+    private fun lastIndexOfSoi(data: ByteArray): Int {
+        var i = data.size - 2
+        while (i >= 0) {
+            if ((data[i].toInt() and 0xFF) == 0xFF && (data[i + 1].toInt() and 0xFF) == 0xD8) {
+                return i
+            }
+            i--
         }
         return -1
     }

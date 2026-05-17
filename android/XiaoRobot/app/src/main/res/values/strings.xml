@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">XIAO Robot</string>
     <string name="hint_ip">IP платы (например 192.168.9.17)</string>
+    <string name="hint_token">Токен (если включён на плате; иначе пусто)</string>
     <string name="connect">Подключить</string>
     <string name="disconnect_session">Отключить</string>
     <string name="motor_stop">Стоп моторы</string>

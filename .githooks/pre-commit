@@ -1,0 +1,36 @@
+#!/bin/sh
+# Защита от попадания секретов в репозиторий.
+# Включить (из корня репо): git config core.hooksPath .githooks
+
+fail=0
+
+# 1. secrets.h не должен попадать в индекс (пароль Wi-Fi только локально).
+if git diff --cached --name-only | grep -qx 'xiao_cam_stream/secrets.h'; then
+  echo "СТОП: xiao_cam_stream/secrets.h в индексе — это файл с паролем."
+  fail=1
+fi
+
+# Только добавляемые строки из индекса.
+added=$(git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' || true)
+
+# 2. Ранее утёкший Wi-Fi пароль не должен вернуться.
+if printf '%s' "$added" | grep -q '0815350698'; then
+  echo "СТОП: обнаружен ранее утёкший Wi-Fi пароль."
+  fail=1
+fi
+
+# 3. Реальный пароль/токен в коде вместо secrets.h.
+#    Разрешены только плейсхолдер и пустая строка.
+hits=$(printf '%s' "$added" \
+  | grep -E 'kWifiPass[[:space:]]*=|XIAO_OTA_PASSWORD|XIAO_API_TOKEN' \
+  | grep -Ev 'YOUR_WIFI_PASSWORD|YOUR_API_TOKEN|""|secrets\.h' || true)
+if [ -n "$hits" ]; then
+  echo "СТОП: похоже на реальный секрет в коде. Используй xiao_cam_stream/secrets.h."
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "Коммит отклонён (.githooks/pre-commit). Убери секрет из индекса и повтори."
+  exit 1
+fi
+exit 0

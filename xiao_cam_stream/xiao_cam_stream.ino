@@ -69,6 +69,11 @@
 #define XIAO_OTA_PASSWORD ""
 #endif
 
+// Токен для /drive и /control (в secrets.h). Пустой = авторизация выключена.
+#ifndef XIAO_API_TOKEN
+#define XIAO_API_TOKEN ""
+#endif
+
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
 static constexpr uint32_t kXiaoFwBuild = 9u;
 static constexpr char kXiaoFwVersion[] = "1.1.0";
@@ -104,6 +109,7 @@ static volatile bool gCtrlWifiHiPower = true;
 
 static volatile uint32_t g_streamFrameCount = 0;
 static volatile uint32_t g_captureCount = 0;
+static volatile uint32_t g_camFailCount = 0;  // esp_camera_fb_get() вернул null
 
 #if XIAO_TELEM_HAVE_PDM
 static I2SClass gMicI2s;
@@ -279,9 +285,21 @@ static bool initCamera() {
   }
 
   statusLedSpin(120);
-  esp_err_t err = esp_camera_init(&config);
+  esp_err_t err = ESP_FAIL;
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    err = esp_camera_init(&config);
+    if (err == ESP_OK) {
+      break;
+    }
+    Serial.printf("Camera init failed 0x%x (попытка %d/3)\n", err, attempt);
+    esp_camera_deinit();
+    delay(250);
+    statusLedSpin(120);
+  }
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed 0x%x\n", err);
+    // Вернуть GPIO21 в выход, иначе индикатор ошибки камеры не мигает
+    // (esp_camera_init мог переинициализировать пин).
+    statusLedInitHw();
     return false;
   }
 
@@ -325,13 +343,15 @@ static void micTcpTask(void * /*arg*/) {
       vTaskDelay(pdMS_TO_TICKS(2));
       continue;
     }
-    if (!gCtrlMicEnabled) {
+    if (!gCtrlMicEnabled || !gMicOk) {
       c.stop();
       continue;
     }
     gMicTcpServing = true;
     int16_t buf[512];
-    while (c.connected()) {
+    // gCtrlMicEnabled/gMicOk в условии — чтобы Core 1 быстро отпустил I2S,
+    // когда main-loop собирается end()/begin() (см. telemetryMicApplyState).
+    while (c.connected() && gCtrlMicEnabled && gMicOk) {
       const size_t got = gMicI2s.readBytes(reinterpret_cast<char *>(buf), sizeof(buf));
       if (got == 0) {
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -368,9 +388,34 @@ static void telemetryMicInit() {
 #endif
 }
 
+/** Вкл/выкл PDM по gCtrlMicEnabled — освобождает I2S при mic=0 (экономия питания).
+ *  Только из main-loop (Core 0). end() — лишь когда Core 1 (micTcpTask) не читает
+ *  I2S: при !gCtrlMicEnabled задача не входит в обслуживание (инвариант там же). */
+#if XIAO_TELEM_HAVE_PDM
+static void telemetryMicApplyState() {
+  static bool lastEnabled = true;  // после setup() мик уже инициализирован
+  if (gCtrlMicEnabled == lastEnabled) {
+    return;
+  }
+  if (gCtrlMicEnabled) {
+    telemetryMicInit();            // повторный begin()
+    lastEnabled = true;
+  } else {
+    if (gMicTcpServing) {
+      return;                      // Core 1 ещё читает — отложить до след. тика
+    }
+    gMicI2s.end();
+    gMicOk = false;
+    lastEnabled = false;
+    Serial.println(F("mic: I2S освобождён (mic=0)"));
+  }
+}
+#endif
+
 /** Периодически обновляет mic_rms / mic_dbfs для телеметрии. */
 static void telemetryMicTick() {
 #if XIAO_TELEM_HAVE_PDM
+  telemetryMicApplyState();
   if (!gCtrlMicEnabled) {
     return;
   }
@@ -500,6 +545,7 @@ static void handleStream() {
   while (client.connected()) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
+      g_camFailCount++;
       delay(2);
       continue;
     }
@@ -537,6 +583,7 @@ static void handleCapture() {
   }
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
+    g_camFailCount++;
     server.send(500, "text/plain", "capture failed");
     return;
   }
@@ -850,6 +897,7 @@ static String telemetryBuildJson() {
   }
   telemetryAppendUInt(j, comma, "cam_frames_stream", g_streamFrameCount);
   telemetryAppendUInt(j, comma, "cam_captures", g_captureCount);
+  telemetryAppendUInt(j, comma, "cam_fail", g_camFailCount);
 
 #if XIAO_TELEM_HAVE_BLE
   telemetryAppendUInt(j, comma, "ble_hw", 1u);
@@ -979,7 +1027,20 @@ static void applyWifiPsFromFlag() {
   }
 }
 
+// Опциональная авторизация. Пустой XIAO_API_TOKEN (по умолчанию) — выключена,
+// совместимо с прокси/Android/tooling. Иначе нужен ?t=<токен>.
+static bool apiAuthOk() {
+  if (XIAO_API_TOKEN[0] == '\0') return true;
+  if (server.hasArg("t") && server.arg("t") == XIAO_API_TOKEN) return true;
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(403, F("application/json; charset=utf-8"),
+              F("{\"ok\":0,\"err\":\"forbidden\"}"));
+  return false;
+}
+
 static void handleControl() {
+  if (!apiAuthOk()) return;
   if (server.hasArg("cam")) {
     gCtrlCamEnabled = server.arg("cam").toInt() != 0;
   }
@@ -1041,6 +1102,7 @@ static void handleControl() {
 
 #if XIAO_DRIVE_ENABLE
 static void handleDrive() {
+  if (!apiAuthOk()) return;
   if (!server.hasArg("stop")) {
     if (!server.hasArg("l") && !server.hasArg("r")) {
       server.send(400, F("text/plain; charset=utf-8"),

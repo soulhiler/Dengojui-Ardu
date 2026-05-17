@@ -13,7 +13,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val mjpeg = MjpegStream(lifecycleScope, ::showFrame, ::setStatusPart)
     private val mic = MicPlayer(lifecycleScope, ::setStatusPart)
-    private val drive = DriveClient(lifecycleScope)
+    private val drive = DriveClient(lifecycleScope, ::setStatusPart)
     private val telemetry = TelemetryPoller(lifecycleScope) { ch, rssi, ssid ->
         wifiInfo = "Wi‑Fi ch$ch · ${rssi} dBm · $ssid"
         updateStatusLine()
@@ -34,6 +34,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.editIp.setText(prefs.getString("host", "192.168.9.17"))
+        binding.editToken.setText(prefs.getString("token", ""))
 
         binding.btnConnect.setOnClickListener {
             if (connected) disconnectAll() else connectAll()
@@ -67,7 +68,9 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Введите IP платы", Toast.LENGTH_SHORT).show()
             return
         }
-        prefs.edit().putString("host", host).apply()
+        val token = binding.editToken.text?.toString()?.trim() ?: ""
+        drive.token = token
+        prefs.edit().putString("host", host).putString("token", token).apply()
         connected = true
         binding.btnConnect.text = getString(R.string.disconnect_session)
         drive.enableBoard(host)
