@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-05-17 — Фаза 5 (гигиена и релиз) — роадмап завершён
+
+- `LICENSE` — **MIT** (выбор владельца; правообладатель `soulhiler` —
+  при необходимости поправить имя).
+- CI `.github/workflows/build.yml`: 3 джобы — тесты `brain/`
+  (unittest), сборка прошивки (`arduino-cli`, FQBN
+  `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`, secrets.h из example),
+  сборка APK (`gradlew assembleDebug`, артефакт).
+- `.editorconfig` — utf-8, отступы по типам, LF для `.githooks/*` и `*.sh`.
+- `docs/onboarding.md` — инструкция новичку «с нуля» (Git/Python/Cursor,
+  безопасность, прошивка, APK, мозг, git-workflow). Закрывает запрос из
+  ранней Cursor-сессии.
+- README: добавлены `brain/`, `onboarding.md`, `dev-log.md`, CI,
+  security-runbook в «Состав».
+
+### Статус верификации
+`brain/`-тесты зелёные локально (9/9). Джобы прошивки/APK — стандартные
+рецепты, реальный прогон — на CI/железе (в этой среде нет ESP32-core/SDK).
+
+### Итог роадмапа
+Фазы 1–5 выполнены автономно. Открыто (требует пользователя):
+ротация Wi-Fi пароля + рерайт git-истории (`docs/security-history-cleanup.md`),
+on-hardware верификация прошивки/APK, разводка УЗ/бамперов.
+
+---
+
 ## 2026-05-17 — Фаза 4 (ИИ-«мозг»)
 
 Новый компонент `brain/` (Python, stdlib; Pillow опц.). **Прошивка не

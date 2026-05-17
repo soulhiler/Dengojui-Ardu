@@ -14,8 +14,10 @@
 | `xiao_cam_viewer.html` | Подсказка по просмотру потока |
 | `android/XiaoRobot/` | Android: камера (`/stream`), мик (TCP `:81`), джойстик → `/drive` |
 | `brain/` | ИИ-«мозг» (Фаза 4): perceive→decide→act поверх HTTP-контракта; `docs/brain-api.md` |
+| `docs/onboarding.md` | Инструкция новичку «с нуля» (Git/Python/Cursor, сборка, workflow) |
 | `docs/dev-log.md` | Журнал разработки по фазам |
 | `docs/security-history-cleanup.md` | Runbook чистки git-истории (user-gated) |
+| `.github/workflows/` | CI: тесты `brain/`, сборка прошивки и APK |
 | `docs/cursor-chat-archives/` | Архив переписок Cursor (`.jsonl` + `.zip`) |
 | `tools/xiao_cam_proxy.py` | Прокси с платы на `localhost` (Cursor/браузер) |
 | `tools/xiao_serial_telemetry.py` | Телеметрия: Serial / HTTP / BLE |
