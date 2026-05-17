@@ -1,8 +1,30 @@
 # Журнал разработки «Деньгожуй»
 
 Краткий лог по фазам роадмапа. Обновляется на каждом рубеже фазы
-(commit + push ветки `claude/suspicious-khorana-70a337`). Записи —
+(commit + push ветки `claude/dev`). Записи —
 новые сверху. Инцидент безопасности — `docs/security-history-cleanup.md`.
+
+---
+
+## 2026-05-17 — Верификация прошивки локально (arduino-cli)
+
+На машине нашлись Arduino IDE-ядро и Python — прошивку удалось собрать здесь.
+
+- `arduino-cli` 1.5.0 (portable в `tools/`, gitignored); переиспользовано уже
+  установленное ядро `esp32:esp32` **3.3.8** из `Arduino15` через
+  `ARDUINO_DIRECTORIES_DATA` — без повторной закачки ядра.
+- `arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi xiao_cam_stream`
+  → **успех, 0 ошибок, 0 предупреждений** в наших источниках.
+- Размер: 1 181 569 Б флэш (**35 %**), глобальные 62 476 Б (**19 %**).
+- `secrets.h` создан из example (gitignored, не коммитится).
+
+### Что это даёт
+Прошивочные правки **Фаз 1–3 подтверждены на уровне компиляции**: токен/
+`apiAuthOk`, `initCamera` retry + `cam_fail`, `telemetryMicApplyState`
+(I2S-release), антидребезг энкодеров + рефлекс безопасности + `spd_*`/
+`drive_safety` в `/telemetry`. Это снимает прежнюю оговорку «в этой среде
+собрать нельзя» для прошивки. Runtime/HW (cross-core I2S, рефлекс,
+одометрия, реальные FPS) — по-прежнему требует платы.
 
 ---
 
