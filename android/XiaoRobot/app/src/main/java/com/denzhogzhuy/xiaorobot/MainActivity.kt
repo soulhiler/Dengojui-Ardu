@@ -41,7 +41,10 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        binding.editIp.setText(prefs.getString("host", "192.168.9.17"))
+        // Дефолт = реальный IP платы; устаревший сохранённый .17 авто-исправляем
+        // (раньше дефолт был .17 и мог «прилипнуть» в prefs).
+        val savedHost = prefs.getString("host", "192.168.9.18") ?: "192.168.9.18"
+        binding.editIp.setText(if (savedHost == "192.168.9.17") "192.168.9.18" else savedHost)
         binding.editToken.setText(prefs.getString("token", ""))
 
         binding.btnConnect.setOnClickListener {
