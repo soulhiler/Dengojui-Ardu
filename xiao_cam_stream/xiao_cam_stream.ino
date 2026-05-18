@@ -274,8 +274,11 @@ static bool initCamera() {
 
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      /* JPEG: меньше число = выше качество (0–63). 2 — почти максимум; 0–1 часто нестабильны / огромный битрейт. */
-      config.jpeg_quality = 2;
+      /* Стабильный непрерывный MJPEG важнее макс. разрешения: QXGA/UXGA @ q2
+         на OV3660 переполняет буфер (cam_hal FB-OVF) → esp_camera_fb_get()=NULL,
+         кадров нет вообще. SVGA + q12 отдаётся надёжно. q: меньше = качественнее. */
+      config.frame_size = FRAMESIZE_SVGA;
+      config.jpeg_quality = 12;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
@@ -314,14 +317,11 @@ static bool initCamera() {
   }
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      if (s->id.PID == OV3660_PID) {
-        s->set_framesize(s, FRAMESIZE_QXGA);
-        s->set_quality(s, 2);
-      } else {
-        /* OV2640 и др.: UXGA — типичный максимум разрешения; выше — только с другой матрицей. */
-        s->set_framesize(s, FRAMESIZE_UXGA);
-        s->set_quality(s, 2);
-      }
+      /* И OV3660, и OV2640: SVGA @ q12 — стабильный непрерывный поток.
+         Выше (QXGA/UXGA, q2) даёт FB-OVF и пропажу кадров на OV3660.
+         Разрешение можно поднять позже, если поток стабилен. */
+      s->set_framesize(s, FRAMESIZE_SVGA);
+      s->set_quality(s, 12);
     } else {
       s->set_framesize(s, FRAMESIZE_SVGA);
       s->set_quality(s, 6);
