@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-05-18 — mDNS-автопоиск платы в приложении (IP больше не нужен)
+
+По запросу: приложение само находит плату, IP вводить не надо.
+
+- **Прошивка без изменений** — уже рекламирует `MDNS.begin("xiao-cam")` +
+  `addService("http","tcp",80)` → сервис `_http._tcp` инстанс `xiao-cam`.
+- **`BoardDiscovery.kt`** (новый): Android NSD — `discoverServices
+  ("_http._tcp.")`, фильтр имени по «xiao», `resolveService` → текущий
+  IPv4 платы. MulticastLock на время поиска; single-resolve guard
+  (ограничение NsdManager до API 34); таймаут; всё в main-поток, один раз.
+- **`MainActivity`**: поле пустое / `xiao-cam.local` / `auto` → mDNS-поиск
+  (6 с); найдено → старт каналов на найденном IP; не найдено → пробуем
+  `last_ip`, иначе просим ввести IP вручную. Литеральный IP → прямой путь
+  (ручной фолбэк). `disconnect`/`onDestroy` останавливают поиск.
+  Дефолт поля → `xiao-cam.local`; устаревший `.17` мигрирует на авто.
+- **Manifest**: +`ACCESS_WIFI_STATE`, +`CHANGE_WIFI_MULTICAST_STATE`.
+- Файлы: `BoardDiscovery.kt` (new), `MainActivity.kt`,
+  `AndroidManifest.xml`, `strings.xml`, `activity_main.xml`.
+
+**Сборка:** PowerShell-инструмент в сессии завис; APK собран
+`java -cp gradle/wrapper/gradle-wrapper.jar
+org.gradle.wrapper.GradleWrapperMain assembleDebug` → BUILD SUCCESSFUL,
+Kotlin/NSD скомпилировались чисто (7.2 МБ). Поведение NSD на самом
+телефоне — подтвердить на устройстве.
+
+**Для пользователя:** поставить новый APK → просто «Подключить»
+(IP не вводить; поле можно оставить `xiao-cam.local`).
+
+---
+
 ## 2026-05-18 — Приложение слало на .17; дефолтный IP исправлен
 
 **Симптом:** на экране статус `видео: Failed to connect to /192.168.9.17:80`;
