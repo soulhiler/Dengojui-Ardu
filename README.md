@@ -50,7 +50,20 @@
 
 ## Android
 
-См. **`android/XiaoRobot/README.md`**. Телефон и XIAO в одной Wi‑Fi.
+См. **`android/XiaoRobot/README.md`**. Телефон и XIAO в одной Wi‑Fi (2.4 ГГц).
+
+### Готовый APK (скачать на телефон)
+
+Отладочный APK лежит в репозитории: **`dist/xiao-robot-debug.apk`**
+(обновляется при пересборке). Прямая ссылка для телефона:
+
+```
+https://github.com/soulhiler/Dengojui-Ardu/raw/claude/dev/dist/xiao-robot-debug.apk
+```
+
+Установка: удалить старое приложение → открыть ссылку на телефоне → поставить
+APK → открыть → **«Подключить»**. IP вводить не нужно — автопоиск платы по
+mDNS (`xiao-cam.local`); поле «Токен» пустое.
 
 ## Быстрый старт Wi‑Fi
 
