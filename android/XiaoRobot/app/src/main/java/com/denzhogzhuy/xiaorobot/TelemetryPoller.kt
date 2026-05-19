@@ -10,11 +10,10 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** Периодически читает /telemetry (Wi‑Fi + сенсоры привода). */
+/** Периодически читает /telemetry и отдаёт компактный многострочный блок (оверлей). */
 class TelemetryPoller(
     private val scope: CoroutineScope,
-    private val onInfo: (wifiChannel: Int, rssi: Int, ssid: String) -> Unit,
-    private val onSensors: ((String) -> Unit)? = null,
+    private val onTelemetry: (String) -> Unit,
 ) {
     private var job: Job? = null
 
@@ -22,6 +21,7 @@ class TelemetryPoller(
         stop()
         job = scope.launch(Dispatchers.IO) {
             while (isActive) {
+                var text = ""
                 try {
                     val c = (URL("http://$host/telemetry").openConnection() as HttpURLConnection).apply {
                         connectTimeout = 4000
@@ -29,47 +29,78 @@ class TelemetryPoller(
                         requestMethod = "GET"
                     }
                     if (c.responseCode == 200) {
-                        val body = c.inputStream.bufferedReader().readText()
-                        val j = JSONObject(body)
-                        val ch = j.optInt("wifi_channel", 0)
-                        val rssi = j.optInt("wifi_rssi", 0)
-                        val ssid = j.optString("wifi_ssid", "")
-                        val sensors = buildSensors(j)
-                        scope.launch(Dispatchers.Main) {
-                            onInfo(ch, rssi, ssid)
-                            onSensors?.invoke(sensors)
-                        }
+                        text = format(JSONObject(c.inputStream.bufferedReader().readText()))
                     }
                     c.disconnect()
                 } catch (_: Exception) {
+                }
+                if (text.isNotEmpty()) {
+                    scope.launch(Dispatchers.Main) { onTelemetry(text) }
                 }
                 delay(2000)
             }
         }
     }
 
-    /** Компактная сводка сенсоров привода (пусто, если привода нет в JSON). */
-    private fun buildSensors(j: JSONObject): String {
-        if (!j.has("drive_hw")) return ""
-        val parts = mutableListOf<String>()
-        val saf = j.optInt("drive_safety", 0)
-        if (saf != 0) {
-            val why = buildString {
-                if (saf and 1 != 0) append("бампер")
-                if (saf and 2 != 0) {
-                    if (isNotEmpty()) append("+")
-                    append("УЗ")
+    /** Берём только присутствующие поля — формат устойчив к версии прошивки. */
+    private fun format(j: JSONObject): String {
+        val lines = mutableListOf<String>()
+
+        val fw = j.optString("fw_version", "")
+        val temp = j.optDouble("chip_temp_c", Double.NaN)
+        StringBuilder().apply {
+            if (fw.isNotEmpty()) append("fw $fw b${j.optInt("fw_build", 0)}")
+            if (!temp.isNaN()) {
+                if (isNotEmpty()) append(" · ")
+                append("%.0f°C".format(temp))
+            }
+            if (isNotEmpty()) lines += toString()
+        }
+
+        val ssid = j.optString("wifi_ssid", "")
+        if (ssid.isNotEmpty()) {
+            lines += "WiFi $ssid ${j.optInt("wifi_rssi", 0)}dBm ch${j.optInt("wifi_channel", 0)}"
+        }
+        val ip = j.optString("wifi_ip", "")
+        if (ip.isNotEmpty() && ip != "0.0.0.0") lines += ip
+
+        StringBuilder().apply {
+            if (j.has("heap_free")) append("heap ${j.optInt("heap_free", 0) / 1024}k")
+            if (j.has("mic_dbfs")) {
+                if (isNotEmpty()) append(" · ")
+                append("мик %.0fdBFS".format(j.optDouble("mic_dbfs", 0.0)))
+            }
+            if (isNotEmpty()) lines += toString()
+        }
+
+        if (j.has("cam_fail") || j.has("cam_frames_stream")) {
+            lines += "cam fail${j.optInt("cam_fail", 0)} кадры${j.optInt("cam_frames_stream", 0)}"
+        }
+
+        if (j.optInt("drive_hw", 0) != 0) {
+            lines += "привод L${j.optInt("drive_cmd_l", 0)} R${j.optInt("drive_cmd_r", 0)}" +
+                " enc${j.optInt("enc_l", 0)}/${j.optInt("enc_r", 0)}" +
+                " v${j.optInt("spd_l", 0)}/${j.optInt("spd_r", 0)}"
+            val saf = j.optInt("drive_safety", 0)
+            val safTxt = if (saf == 0) {
+                "OK"
+            } else {
+                buildString {
+                    append("STOP(")
+                    if (saf and 1 != 0) append("бампер")
+                    if (saf and 2 != 0) {
+                        if (last() != '(') append("+")
+                        append("УЗ")
+                    }
+                    append(")")
                 }
             }
-            parts += "СТОП ($why)"
-        } else if (j.optInt("bumper", 0) != 0) {
-            parts += "бампер"
+            val us = j.optInt("us_cm", 0)
+            lines += "УЗ ${if (us > 0) "$us см" else "—"} · safety $safTxt" +
+                if (j.optInt("bumper", 0) != 0) " · бампер" else ""
         }
-        val us = j.optInt("us_cm", 0)
-        if (us > 0) parts += "УЗ ${us}см"
-        if (j.has("enc_l")) parts += "enc ${j.optInt("enc_l", 0)}/${j.optInt("enc_r", 0)}"
-        if (j.has("spd_l")) parts += "v ${j.optInt("spd_l", 0)}/${j.optInt("spd_r", 0)}"
-        return parts.joinToString(" · ")
+
+        return lines.joinToString("\n")
     }
 
     fun stop() {

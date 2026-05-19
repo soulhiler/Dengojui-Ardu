@@ -2,8 +2,12 @@ package com.denzhogzhuy.xiaorobot
 
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.denzhogzhuy.xiaorobot.databinding.ActivityMainBinding
 import kotlin.math.roundToInt
@@ -14,23 +18,16 @@ class MainActivity : AppCompatActivity() {
     private val mjpeg = MjpegStream(lifecycleScope, ::showFrame, ::setStatusPart)
     private val mic = MicPlayer(lifecycleScope, ::setStatusPart)
     private val drive = DriveClient(lifecycleScope, ::setStatusPart)
-    private val telemetry = TelemetryPoller(
-        lifecycleScope,
-        onInfo = { ch, rssi, ssid ->
-            wifiInfo = "Wi‑Fi ch$ch · ${rssi} dBm · $ssid"
-            updateStatusLine()
-        },
-        onSensors = { s ->
-            sensorInfo = s
-            updateStatusLine()
-        },
-    )
+    private val telemetry = TelemetryPoller(lifecycleScope) { txt ->
+        runOnUiThread {
+            binding.tvTelemetry.text = txt
+            binding.tvTelemetry.visibility = if (txt.isEmpty()) View.GONE else View.VISIBLE
+        }
+    }
 
     private val discovery by lazy { BoardDiscovery(this, ::setStatusPart) }
 
     private var connected = false
-    private var wifiInfo = ""
-    private var sensorInfo = ""
     private var micOn = false
     private var host: String = ""
 
@@ -42,6 +39,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        enableImmersive()
 
         // По умолчанию — авто-поиск по mDNS (xiao-cam.local), IP знать не нужно.
         // Устаревший «прилипший» .17 сбрасываем на авто.
@@ -85,6 +83,7 @@ class MainActivity : AppCompatActivity() {
             .apply()
         connected = true
         binding.btnConnect.text = getString(R.string.disconnect_session)
+        showInputs(false)
 
         val auto = field.isEmpty() ||
             field.equals("xiao-cam.local", ignoreCase = true) ||
@@ -105,6 +104,7 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         connected = false
                         binding.btnConnect.text = getString(R.string.connect)
+                        showInputs(true)
                         setStatusPart("плата не найдена. Включи плату или впиши IP")
                     }
                 },
@@ -134,9 +134,9 @@ class MainActivity : AppCompatActivity() {
         mjpeg.stop()
         mic.stop()
         telemetry.stop()
-        wifiInfo = ""
-        sensorInfo = ""
         motorInfo = ""
+        showInputs(true)
+        binding.tvTelemetry.visibility = View.GONE
         if (host.isNotEmpty()) drive.stopSending(host)
         setStatusPart("отключено")
     }
@@ -175,13 +175,31 @@ class MainActivity : AppCompatActivity() {
     private fun updateStatusLine() {
         val parts = listOfNotNull(
             statusLine.takeIf { it.isNotEmpty() },
-            wifiInfo.takeIf { it.isNotEmpty() },
-            sensorInfo.takeIf { it.isNotEmpty() },
             motorInfo.takeIf { it.isNotEmpty() },
         )
         runOnUiThread {
             binding.statusText.text = parts.joinToString(" · ")
         }
+    }
+
+    /** Поля ввода скрываем после подключения — видео на весь экран. */
+    private fun showInputs(visible: Boolean) {
+        val v = if (visible) View.VISIBLE else View.GONE
+        binding.ipLayout.visibility = v
+        binding.tokenLayout.visibility = v
+    }
+
+    private fun enableImmersive() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val ctrl = WindowInsetsControllerCompat(window, binding.root)
+        ctrl.hide(WindowInsetsCompat.Type.systemBars())
+        ctrl.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enableImmersive()
     }
 
     /** Дифференциальный привод: вперёд/назад + поворот. */

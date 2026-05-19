@@ -1,107 +1,141 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Полноэкранное видео; элементы управления и телеметрия — оверлеи поверх. -->
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bg"
-    android:padding="12dp">
-
-    <com.google.android.material.textfield.TextInputLayout
-        android:id="@+id/ipLayout"
-        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:hint="@string/hint_ip"
-        app:layout_constraintEnd_toStartOf="@id/btnConnect"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/editIp"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:inputType="text"
-            android:text="xiao-cam.local" />
-    </com.google.android.material.textfield.TextInputLayout>
-
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnConnect"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/connect"
-        app:layout_constraintBottom_toBottomOf="@id/ipLayout"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="@id/ipLayout" />
-
-    <com.google.android.material.textfield.TextInputLayout
-        android:id="@+id/tokenLayout"
-        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:hint="@string/hint_token"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/ipLayout">
-
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/editToken"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:inputType="text" />
-    </com.google.android.material.textfield.TextInputLayout>
+    android:background="#000000">
 
     <ImageView
         android:id="@+id/videoView"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_marginTop="8dp"
         android:background="#000000"
         android:contentDescription="camera"
         android:scaleType="fitCenter"
-        app:layout_constraintBottom_toTopOf="@id/statusText"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/tokenLayout"
-        app:layout_constraintHeight_min="120dp" />
+        app:layout_constraintTop_toTopOf="parent" />
 
-    <TextView
-        android:id="@+id/statusText"
+    <!-- Верхняя панель подключения (поля прячутся после подключения) -->
+    <LinearLayout
+        android:id="@+id/topPanel"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:textColor="#8B949E"
-        android:textSize="12sp"
+        android:background="#B3000000"
+        android:orientation="vertical"
+        android:padding="8dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/videoView" />
+        app:layout_constraintTop_toTopOf="parent">
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/ipLayout"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="@string/hint_ip">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/editIp"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="text"
+                    android:text="xiao-cam.local"
+                    android:textColor="#FFFFFF" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnConnect"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical"
+                android:layout_marginStart="6dp"
+                android:text="@string/connect" />
+        </LinearLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tokenLayout"
+            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:hint="@string/hint_token">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/editToken"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="text"
+                android:textColor="#FFFFFF" />
+        </com.google.android.material.textfield.TextInputLayout>
+    </LinearLayout>
+
+    <!-- Телеметрия: оверлей слева под верхней панелью -->
+    <TextView
+        android:id="@+id/tvTelemetry"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="8dp"
+        android:background="#80000000"
+        android:fontFamily="monospace"
+        android:padding="6dp"
+        android:textColor="#E6EDF3"
+        android:textSize="11sp"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/topPanel" />
+
+    <!-- Статус (сообщения подключения) — справа сверху -->
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="8dp"
+        android:background="#80000000"
+        android:maxWidth="220dp"
+        android:padding="6dp"
+        android:textColor="#C9D1D9"
+        android:textSize="12sp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/topPanel" />
+
+    <!-- Джойстик — оверлей снизу слева -->
     <com.denzhogzhuy.xiaorobot.JoystickView
         android:id="@+id/joystick"
-        android:layout_width="0dp"
-        android:layout_height="160dp"
-        android:layout_marginTop="8dp"
+        android:layout_width="150dp"
+        android:layout_height="150dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="20dp"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toStartOf="@id/btnColumn"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/statusText" />
+        app:layout_constraintStart_toStartOf="parent" />
 
+    <!-- Кнопки — оверлей снизу справа -->
     <LinearLayout
         android:id="@+id/btnColumn"
         android:layout_width="wrap_content"
-        android:layout_height="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="20dp"
         android:gravity="center"
         android:orientation="vertical"
-        app:layout_constraintBottom_toBottomOf="@id/joystick"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="@id/joystick">
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnMic"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:backgroundTint="#99000000"
             android:text="@string/mic_on" />
 
         <com.google.android.material.button.MaterialButton
@@ -110,6 +144,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
+            android:backgroundTint="#99000000"
             android:text="@string/motor_stop" />
     </LinearLayout>
 
