@@ -23,9 +23,15 @@ digraph wiring {
   // ===================== Легенда (вверху) =====================
   legend [shape=box style="filled,rounded" fillcolor="#F5F5F5" color="#999999"
           label=<<TABLE BORDER="0" CELLBORDER="0" CELLPADDING="3">
-            <TR><TD ALIGN="LEFT"><B>Условные обозначения</B></TD></TR>
-            <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9">Пины с одинаковой меткой <FONT COLOR="#FB8C00"><B>3V3</B></FONT> или <FONT COLOR="#212121"><B>GND</B></FONT> соединены общей шиной</FONT></TD></TR>
-            <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9">Сигналы (D…→…) показаны прямыми проводами</FONT></TD></TR>
+            <TR><TD COLSPAN="2" ALIGN="LEFT"><B>Условные обозначения</B></TD></TR>
+            <TR><TD COLSPAN="2" ALIGN="LEFT"><FONT POINT-SIZE="9">Пины с одинаковой меткой <FONT COLOR="#FB8C00"><B>3V3</B></FONT> или <FONT COLOR="#212121"><B>GND</B></FONT> соединены общей шиной</FONT></TD></TR>
+            <TR><TD COLSPAN="2" ALIGN="LEFT"><FONT POINT-SIZE="9"><B>Цвет провода = функция:</B></FONT></TD></TR>
+            <TR><TD ALIGN="RIGHT"><FONT COLOR="#E53935"><B>━━</B></FONT></TD><TD ALIGN="LEFT"><FONT POINT-SIZE="9">VM / 5В питание</FONT></TD></TR>
+            <TR><TD ALIGN="RIGHT"><FONT COLOR="#7CB342"><B>━━</B></FONT></TD><TD ALIGN="LEFT"><FONT POINT-SIZE="9">PWM (D5→PWMA, D4→PWMB)</FONT></TD></TR>
+            <TR><TD ALIGN="RIGHT"><FONT COLOR="#0288D1"><B>━━</B></FONT></TD><TD ALIGN="LEFT"><FONT POINT-SIZE="9">направление IN1/IN2 (D0–D3)</FONT></TD></TR>
+            <TR><TD ALIGN="RIGHT"><FONT COLOR="#455A64"><B>━━</B></FONT></TD><TD ALIGN="LEFT"><FONT POINT-SIZE="9">выходы моторов AO/BO</FONT></TD></TR>
+            <TR><TD ALIGN="RIGHT"><FONT COLOR="#8E24AA"><B>━━</B></FONT></TD><TD ALIGN="LEFT"><FONT POINT-SIZE="9">SPI данные (D8→SCK, D10→MOSI)</FONT></TD></TR>
+            <TR><TD ALIGN="RIGHT"><FONT COLOR="#D81B60"><B>━━</B></FONT></TD><TD ALIGN="LEFT"><FONT POINT-SIZE="9">SPI управление (D7→DC, D6→CS)</FONT></TD></TR>
           </TABLE>>];
 
   // ===================== NET-метки (теги питания и земли) =====================
@@ -177,31 +183,31 @@ digraph wiring {
   // ===================== Сигнальные провода (точка → точка) =====================
 
   // Питание моторов
-  bat:Pplus:s   -> tb6612:PVM:n  [color="#E53935" penwidth=2.4 xlabel="VM"];
+  bat:Pplus:s   -> tb6612:PVM:n  [color="#E53935" penwidth=2.4];
 
   // Buck IN: батарея → buck (lateral)
-  bat:Pplus:e   -> buck:PINp:w   [color="#E53935" penwidth=2 xlabel="VIN" constraint=false];
+  bat:Pplus:e   -> buck:PINp:w   [color="#E53935" penwidth=2 constraint=false];
 
   // Buck OUT 5В → XIAO 5V (прямой провод)
-  buck:POUTp:s  -> xiao:P5V:w    [color="#E53935" penwidth=2 xlabel="5 В"];
+  buck:POUTp:s  -> xiao:P5V:w    [color="#E53935" penwidth=2];
 
   // Моторы → TB6612 (вход с верха TB)
-  ml:PMplus:s   -> tb6612:PAO1:n [color="#455A64" penwidth=1.8 xlabel="AO1"];
-  ml:PMminus:s  -> tb6612:PAO2:n [color="#455A64" penwidth=1.8 xlabel="AO2"];
-  mr:PMplus:s   -> tb6612:PBO1:n [color="#455A64" penwidth=1.8 xlabel="BO1"];
-  mr:PMminus:s  -> tb6612:PBO2:n [color="#455A64" penwidth=1.8 xlabel="BO2"];
+  ml:PMplus:s   -> tb6612:PAO1:n [color="#455A64" penwidth=1.8];
+  ml:PMminus:s  -> tb6612:PAO2:n [color="#455A64" penwidth=1.8];
+  mr:PMplus:s   -> tb6612:PBO1:n [color="#455A64" penwidth=1.8];
+  mr:PMminus:s  -> tb6612:PBO2:n [color="#455A64" penwidth=1.8];
 
   // XIAO ↔ TB6612 (логика)
-  tb6612:PPWMA:s -> xiao:PD5:e   [color="#7CB342" xlabel="D5→PWMA"];
-  tb6612:PAIN1:s -> xiao:PD0:e   [color="#0288D1" xlabel="D0→AIN1"];
-  tb6612:PAIN2:s -> xiao:PD1:e   [color="#0288D1" xlabel="D1→AIN2"];
-  tb6612:PPWMB:s -> xiao:PD4:e   [color="#7CB342" xlabel="D4→PWMB"];
-  tb6612:PBIN1:s -> xiao:PD2:e   [color="#0288D1" xlabel="D2→BIN1"];
-  tb6612:PBIN2:s -> xiao:PD3:e   [color="#0288D1" xlabel="D3→BIN2"];
+  tb6612:PPWMA:s -> xiao:PD5:e   [color="#7CB342"];
+  tb6612:PAIN1:s -> xiao:PD0:e   [color="#0288D1"];
+  tb6612:PAIN2:s -> xiao:PD1:e   [color="#0288D1"];
+  tb6612:PPWMB:s -> xiao:PD4:e   [color="#7CB342"];
+  tb6612:PBIN1:s -> xiao:PD2:e   [color="#0288D1"];
+  tb6612:PBIN2:s -> xiao:PD3:e   [color="#0288D1"];
 
   // XIAO ↔ OLED (SPI)
-  xiao:PD8:w   -> oled:POSCK:n  [color="#8E24AA" xlabel="D8→SCK"];
-  xiao:PD10:w  -> oled:POMOSI:n [color="#8E24AA" xlabel="D10→MOSI"];
-  xiao:PD7:w   -> oled:PODC:n   [color="#D81B60" xlabel="D7→DC"];
-  xiao:PD6:s   -> oled:POCS:n   [color="#D81B60" xlabel="D6→CS"];
+  xiao:PD8:w   -> oled:POSCK:n  [color="#8E24AA"];
+  xiao:PD10:w  -> oled:POMOSI:n [color="#8E24AA"];
+  xiao:PD7:w   -> oled:PODC:n   [color="#D81B60"];
+  xiao:PD6:s   -> oled:POCS:n   [color="#D81B60"];
 }
