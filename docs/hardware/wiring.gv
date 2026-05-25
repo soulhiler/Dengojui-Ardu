@@ -1,0 +1,146 @@
+// Схема пайки «XIAO Деньгожуй»: каждый компонент — таблица с пинами,
+// каждый провод — отдельное ребро с цветом и подписью. Без cable-боксов.
+// Источник пинов: xiao_cam_stream/drive_config.h.
+// Рендер: dot -Tpdf wiring.gv -o wiring-xiao-tb6612.pdf
+//
+// Раскладка по сторонам компонентов:
+//   TB6612 — слева логика+питание (мордой к XIAO/батарее),
+//            справа AO1/AO2/BO1/BO2 (мордой к моторам).
+//   Компас-стороны (:e / :w) форсируют выход провода с нужной стороны,
+//   чтобы dot не вёл провода в обход корпуса.
+
+digraph wiring {
+  rankdir=LR;
+  splines=spline;
+  bgcolor="white";
+  nodesep=0.5;
+  ranksep=2.0;
+  fontname="Arial";
+  node [shape=plaintext fontname="Arial"];
+  edge [fontname="Arial" fontsize=9 penwidth=1.5 arrowhead=none arrowtail=none dir=none];
+
+  // ===================== Компоненты =====================
+
+  bat [label=<
+    <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6">
+      <TR><TD COLSPAN="2" BGCOLOR="#FFF59D"><B>Батарея 7.4 В</B></TD></TR>
+      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">Li-Ion 2S · 2.5–13.5 В</FONT></TD></TR>
+      <TR><TD PORT="Pplus"  BGCOLOR="#FFCDD2"><B>+</B></TD>
+          <TD PORT="Pminus" BGCOLOR="#212121"><FONT COLOR="white"><B>−</B></FONT></TD></TR>
+    </TABLE>
+  >];
+
+  // TB6612: ЛЕВО — VM/VCC/GND/STBY/PWM/IN (вход от XIAO и батареи),
+  //         ПРАВО — AO1/AO2/BO1/BO2 (выход к моторам).
+  tb6612 [label=<
+    <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6">
+      <TR><TD COLSPAN="2" BGCOLOR="#90CAF9"><B>TB6612FNG</B></TD></TR>
+      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">драйвер моторов · 2 канала</FONT></TD></TR>
+      <TR><TD PORT="PVM"   BGCOLOR="#FFCDD2"><B>VM</B></TD>
+          <TD PORT="PAO1"  BGCOLOR="#ECEFF1">AO1</TD></TR>
+      <TR><TD PORT="PVCC"  BGCOLOR="#FFE082">VCC</TD>
+          <TD PORT="PAO2"  BGCOLOR="#ECEFF1">AO2</TD></TR>
+      <TR><TD PORT="PGND"  BGCOLOR="#212121"><FONT COLOR="white"><B>GND</B></FONT></TD>
+          <TD PORT="PBO1"  BGCOLOR="#ECEFF1">BO1</TD></TR>
+      <TR><TD PORT="PSTBY" BGCOLOR="#FFE082">STBY</TD>
+          <TD PORT="PBO2"  BGCOLOR="#ECEFF1">BO2</TD></TR>
+      <TR><TD PORT="PPWMA" BGCOLOR="#C8E6C9">PWMA</TD><TD>&#160;</TD></TR>
+      <TR><TD PORT="PAIN1" BGCOLOR="#BBDEFB">AIN1</TD><TD>&#160;</TD></TR>
+      <TR><TD PORT="PAIN2" BGCOLOR="#BBDEFB">AIN2</TD><TD>&#160;</TD></TR>
+      <TR><TD PORT="PPWMB" BGCOLOR="#C8E6C9">PWMB</TD><TD>&#160;</TD></TR>
+      <TR><TD PORT="PBIN1" BGCOLOR="#BBDEFB">BIN1</TD><TD>&#160;</TD></TR>
+      <TR><TD PORT="PBIN2" BGCOLOR="#BBDEFB">BIN2</TD><TD>&#160;</TD></TR>
+    </TABLE>
+  >];
+
+  xiao [label=<
+    <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6">
+      <TR><TD COLSPAN="2" BGCOLOR="#FFCC80"><B>XIAO ESP32-S3 Sense</B></TD></TR>
+      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">USB-C сверху · камера · 2.4 ГГц</FONT></TD></TR>
+      <TR><TD PORT="P5V"  BGCOLOR="#FFCDD2">5V</TD>
+          <TD PORT="PD0"  BGCOLOR="#BBDEFB">D0 · GPIO 1</TD></TR>
+      <TR><TD PORT="PGND" BGCOLOR="#212121"><FONT COLOR="white"><B>GND</B></FONT></TD>
+          <TD PORT="PD1"  BGCOLOR="#BBDEFB">D1 · GPIO 2</TD></TR>
+      <TR><TD PORT="P3V3" BGCOLOR="#FFE082">3V3</TD>
+          <TD PORT="PD2"  BGCOLOR="#BBDEFB">D2 · GPIO 3</TD></TR>
+      <TR><TD PORT="PD10" BGCOLOR="#E1BEE7">D10 · GPIO 9</TD>
+          <TD PORT="PD3"  BGCOLOR="#BBDEFB">D3 · GPIO 4</TD></TR>
+      <TR><TD PORT="PD9">D9 · GPIO 8</TD>
+          <TD PORT="PD4"  BGCOLOR="#C8E6C9">D4 · GPIO 5</TD></TR>
+      <TR><TD PORT="PD8"  BGCOLOR="#E1BEE7">D8 · GPIO 7</TD>
+          <TD PORT="PD5"  BGCOLOR="#C8E6C9">D5 · GPIO 6</TD></TR>
+      <TR><TD PORT="PD7"  BGCOLOR="#F8BBD0">D7 · GPIO 44</TD>
+          <TD PORT="PD6"  BGCOLOR="#F8BBD0">D6 · GPIO 43</TD></TR>
+    </TABLE>
+  >];
+
+  oled [label=<
+    <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6">
+      <TR><TD BGCOLOR="#80DEEA"><B>OLED SSD1306</B></TD></TR>
+      <TR><TD><FONT POINT-SIZE="9">0.96″ SPI · 7-pin</FONT></TD></TR>
+      <TR><TD PORT="POGND"  BGCOLOR="#212121"><FONT COLOR="white"><B>GND</B></FONT></TD></TR>
+      <TR><TD PORT="POVCC"  BGCOLOR="#FFE082">VCC</TD></TR>
+      <TR><TD PORT="POSCK"  BGCOLOR="#E1BEE7">D0 / SCK</TD></TR>
+      <TR><TD PORT="POMOSI" BGCOLOR="#E1BEE7">D1 / MOSI</TD></TR>
+      <TR><TD PORT="PORES"  BGCOLOR="#FFE082">RES</TD></TR>
+      <TR><TD PORT="PODC"   BGCOLOR="#F8BBD0">DC</TD></TR>
+      <TR><TD PORT="POCS"   BGCOLOR="#F8BBD0">CS</TD></TR>
+    </TABLE>
+  >];
+
+  ml [label=<
+    <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6">
+      <TR><TD COLSPAN="2" BGCOLOR="#CFD8DC"><B>Мотор L</B></TD></TR>
+      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">3–12 В</FONT></TD></TR>
+      <TR><TD PORT="PMplus"  BGCOLOR="#ECEFF1">M+</TD>
+          <TD PORT="PMminus" BGCOLOR="#ECEFF1">M−</TD></TR>
+    </TABLE>
+  >];
+
+  mr [label=<
+    <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6">
+      <TR><TD COLSPAN="2" BGCOLOR="#CFD8DC"><B>Мотор R</B></TD></TR>
+      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">3–12 В</FONT></TD></TR>
+      <TR><TD PORT="PMplus"  BGCOLOR="#ECEFF1">M+</TD>
+          <TD PORT="PMminus" BGCOLOR="#ECEFF1">M−</TD></TR>
+    </TABLE>
+  >];
+
+  // ===================== Провода (компас-стороны фиксируют направление) =====================
+  // Цвета: VM=красный, 3V3=оранжевый, GND=чёрный, PWM=зелёный, IN=синий,
+  //        SPI данные=фиолетовый, CS/DC=розовый, моторы=серый.
+
+  // --- Силовая часть (батарея слева, TB6612 правее) ---
+  bat:Pplus:e  -> tb6612:PVM:w  [color="#E53935" penwidth=2.4 label="VM"];
+  bat:Pminus:e -> tb6612:PGND:w [color="#212121" penwidth=2.4 label="GND"];
+
+  // --- Логика: XIAO правая колонка → TB6612 левая колонка ---
+  xiao:PGND:e  -> tb6612:PGND:w  [color="#212121" penwidth=1.6 label="GND"];
+  xiao:P3V3:e  -> tb6612:PVCC:w  [color="#FB8C00" label="3V3 → VCC"];
+  xiao:P3V3:e  -> tb6612:PSTBY:w [color="#FB8C00" label="3V3 → STBY"];
+  xiao:PD5:e   -> tb6612:PPWMA:w [color="#7CB342" label="D5 → PWMA"];
+  xiao:PD0:e   -> tb6612:PAIN1:w [color="#0288D1" label="D0 → AIN1"];
+  xiao:PD1:e   -> tb6612:PAIN2:w [color="#0288D1" label="D1 → AIN2"];
+  xiao:PD4:e   -> tb6612:PPWMB:w [color="#7CB342" label="D4 → PWMB"];
+  xiao:PD2:e   -> tb6612:PBIN1:w [color="#0288D1" label="D2 → BIN1"];
+  xiao:PD3:e   -> tb6612:PBIN2:w [color="#0288D1" label="D3 → BIN2"];
+
+  // --- Выходы на моторы: TB6612 правая колонка → моторы справа ---
+  tb6612:PAO1:e -> ml:PMplus:w  [color="#455A64" penwidth=1.8 label="AO1"];
+  tb6612:PAO2:e -> ml:PMminus:w [color="#455A64" penwidth=1.8 label="AO2"];
+  tb6612:PBO1:e -> mr:PMplus:w  [color="#455A64" penwidth=1.8 label="BO1"];
+  tb6612:PBO2:e -> mr:PMminus:w [color="#455A64" penwidth=1.8 label="BO2"];
+
+  // --- OLED: XIAO левая колонка (D7/D8/D10) + правая D6 → OLED ниже ---
+  xiao:PGND:e  -> oled:POGND:w  [color="#212121" penwidth=1.6];
+  xiao:P3V3:e  -> oled:POVCC:w  [color="#FB8C00" label="3V3 → VCC"];
+  xiao:P3V3:e  -> oled:PORES:w  [color="#FB8C00" label="3V3 → RES"];
+  xiao:PD8:e   -> oled:POSCK:w  [color="#8E24AA" label="D8 → SCK"];
+  xiao:PD10:e  -> oled:POMOSI:w [color="#8E24AA" label="D10 → MOSI"];
+  xiao:PD7:e   -> oled:PODC:w   [color="#D81B60" label="D7 → DC"];
+  xiao:PD6:e   -> oled:POCS:w   [color="#D81B60" label="D6 → CS"];
+
+  // ===================== Компоновка =====================
+  // Размещаем моторы на одном уровне, OLED — ниже TB6612.
+  { rank=same; ml; mr; }
+}
