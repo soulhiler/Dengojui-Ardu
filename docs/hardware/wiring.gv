@@ -1,30 +1,38 @@
-// Схема пайки «XIAO Деньгожуй». Каждый компонент — таблица с пинами в ТОМ ЖЕ
-// порядке, что на физической плате (силкскрин). Каждый провод — отдельное
-// ребро с цветом и подписью.
+// Схема пайки «XIAO Деньгожуй». Все пины в порядке силкскрина физических плат.
+// КОНВЕНЦИИ (KiCad / Fritzing / IEEE 315):
+//   1. Питание (3V3, GND) — отдельные ГОРИЗОНТАЛЬНЫЕ ШИНЫ-узлы (rails),
+//      каждый потребитель — короткий отвод к шине. Не fan-out из одного пина.
+//   2. Сигнальные провода (D5→PWMA и т.п.) — прямые подписанные рёбра между пинами.
+//   3. Orthogonal routing (splines=ortho) — 90° повороты, как на инженерных схемах.
+//   4. Провод подходит к пину СНАРУЖИ корпуса; compass `:n/:s/:e/:w` указывает
+//      на внешнюю грань таблицы (для 2-кол: лев. → :w, прав. → :e;
+//      для горизонт. m×2: верх → :n, низ → :s).
+//   5. Стрелок нет — это wiring, а не граф зависимостей.
 // Источник управляющих пинов: xiao_cam_stream/drive_config.h.
-//
-// Раскладка:
-//   Сверху  : Батарея, Buck (5В), Мотор L, Мотор R
-//   Центр   : TB6612FNG горизонтально (8 пинов × 2 ряда, как на SparkFun-корпусе)
-//   Снизу   : XIAO ESP32-S3 Sense (2×7, как на плате)
-//   Низ-низ : OLED 0.96″ SPI (1 ряд × 7 пинов, как на плате)
-//
-// Питание моторов идёт напрямую с батареи на VM TB6612.
-// Питание XIAO — через DC-DC Buck (батарея 7.4 В → 5 В на 5V-пад XIAO).
-//
 // Рендер: dot -Tpdf wiring.gv -o wiring-xiao-tb6612.pdf
 
 digraph wiring {
   rankdir=TB;
-  splines=spline;
+  splines=ortho;
   bgcolor="white";
-  nodesep=0.55;
-  ranksep=1.4;
+  nodesep=0.35;
+  ranksep=0.85;
   fontname="Arial";
   node [shape=plaintext fontname="Arial"];
-  edge [fontname="Arial" fontsize=9 penwidth=1.4 arrowhead=none arrowtail=none dir=none];
+  edge [fontname="Arial" fontsize=8 penwidth=1.4 arrowhead=none arrowtail=none dir=none];
 
-  // ===================== Верхний ярус =====================
+  // ===================== Шины-узлы (rails) =====================
+
+  v3v3_rail [shape=box style="filled,rounded" fillcolor="#FFE082" color="#FB8C00"
+             label="3V3 — питание логики (от XIAO 3V3)"
+             width=10 height=0.4 fixedsize=true fontname="Arial"];
+
+  gnd_rail  [shape=box style="filled,rounded" fillcolor="#212121" fontcolor="white"
+             color="#000000"
+             label="GND — общая земля"
+             width=10 height=0.4 fixedsize=true fontname="Arial"];
+
+  // ===================== Компоненты =====================
 
   bat [label=<
     <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
@@ -38,7 +46,7 @@ digraph wiring {
   buck [label=<
     <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
       <TR><TD COLSPAN="2" BGCOLOR="#FFE082"><B>DC-DC Buck 5 В</B></TD></TR>
-      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">MP1584 / LM2596 · 7.4 В → 5 В</FONT></TD></TR>
+      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">MP1584 / LM2596 · 7.4 → 5 В</FONT></TD></TR>
       <TR><TD PORT="PINp"  BGCOLOR="#FFCDD2"><B>IN+</B></TD>
           <TD PORT="POUTp" BGCOLOR="#FFB300"><B>OUT+ 5В</B></TD></TR>
       <TR><TD PORT="PINn"  BGCOLOR="#212121"><FONT COLOR="white"><B>IN−</B></FONT></TD>
@@ -64,9 +72,7 @@ digraph wiring {
     </TABLE>
   >];
 
-  // ===================== TB6612 — горизонтально (физический SparkFun-порядок) =====================
-  // Верхний ряд (мотор-сторона):  VM | VCC | GND | AO1 | AO2 | BO2 | BO1 | GND
-  // Нижний  ряд (логика-сторона): PWMA | AIN2 | AIN1 | STBY | BIN1 | BIN2 | PWMB | GND
+  // TB6612 — горизонтально, физический SparkFun-порядок
   tb6612 [label=<
     <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">
       <TR><TD COLSPAN="8" BGCOLOR="#90CAF9"><B>TB6612FNG</B></TD></TR>
@@ -95,11 +101,10 @@ digraph wiring {
     </TABLE>
   >];
 
-  // ===================== XIAO ESP32-S3 Sense — физический порядок (USB-C сверху) =====================
   xiao [label=<
     <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
       <TR><TD COLSPAN="2" BGCOLOR="#FFCC80"><B>XIAO ESP32-S3 Sense</B></TD></TR>
-      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">USB-C сверху · камера · 2.4 ГГц антенна</FONT></TD></TR>
+      <TR><TD COLSPAN="2"><FONT POINT-SIZE="9">USB-C сверху · камера · 2.4 ГГц</FONT></TD></TR>
       <TR><TD PORT="P5V"  BGCOLOR="#FFCDD2">5V</TD>
           <TD PORT="PD0"  BGCOLOR="#BBDEFB">D0 · GPIO 1</TD></TR>
       <TR><TD PORT="PGND" BGCOLOR="#212121"><FONT COLOR="white"><B>GND</B></FONT></TD>
@@ -117,7 +122,6 @@ digraph wiring {
     </TABLE>
   >];
 
-  // ===================== OLED — горизонтально, 1 ряд × 7 пинов (физический порядок силкскрина) =====================
   oled [label=<
     <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
       <TR><TD COLSPAN="7" BGCOLOR="#80DEEA"><B>OLED 0.96″ SSD1306 SPI</B></TD></TR>
@@ -134,44 +138,58 @@ digraph wiring {
     </TABLE>
   >];
 
-  // Группа верхнего яруса — на одном уровне
+  // ===== Принудительная вертикальная компоновка =====
+  // верхний ярус — источники питания и моторы
   { rank=same; bat; buck; ml; mr; }
+  // 3V3 шина — между моторами и TB6612
+  // TB6612 в центре
+  // XIAO под TB6612
+  // GND шина в самом низу
 
   // ===================== Провода =====================
 
-  // --- Питание моторов: батарея → TB6612 VM/GND (верхний ряд TB) ---
-  bat:Pplus:s   -> tb6612:PVM:n    [color="#E53935" penwidth=2.4 label="VM"];
-  bat:Pminus:s  -> tb6612:PGNDt:n  [color="#212121" penwidth=2  label="GND"];
+  // --- Питание моторов (BAT+ → VM): прямой провод, 2 конца ---
+  bat:Pplus:s   -> tb6612:PVM:n    [color="#E53935" penwidth=2.4 xlabel="VM"];
 
-  // --- Buck-преобразователь: батарея → Buck → XIAO 5V/GND ---
-  bat:Pplus:s   -> buck:PINp:n     [color="#E53935" penwidth=2  label="VIN"];
-  bat:Pminus:s  -> buck:PINn:n     [color="#212121" penwidth=1.6];
-  buck:POUTp:s  -> xiao:P5V:n      [color="#E53935" penwidth=2  label="5 В → XIAO 5V"];
-  buck:POUTn:s  -> xiao:PGND:n     [color="#212121" penwidth=1.6 label="GND"];
+  // --- Buck IN: BAT → Buck (lateral, по горизонтали) ---
+  bat:Pplus:e   -> buck:PINp:w     [color="#E53935" penwidth=2  xlabel="VIN" constraint=false];
+  bat:Pminus:e  -> buck:PINn:w     [color="#212121" penwidth=1.6 constraint=false];
 
-  // --- Выходы на моторы: моторы выше → TB6612 верхний ряд ---
-  ml:PMplus:s  -> tb6612:PAO1:n  [color="#455A64" penwidth=1.8 label="AO1"];
-  ml:PMminus:s -> tb6612:PAO2:n  [color="#455A64" penwidth=1.8 label="AO2"];
-  mr:PMplus:s  -> tb6612:PBO1:n  [color="#455A64" penwidth=1.8 label="BO1"];
-  mr:PMminus:s -> tb6612:PBO2:n  [color="#455A64" penwidth=1.8 label="BO2"];
+  // --- Buck OUT 5В → XIAO 5V (прямой провод, 2 конца) ---
+  buck:POUTp:s  -> xiao:P5V:w      [color="#E53935" penwidth=2  xlabel="5 В"];
 
-  // --- Логика: TB6612 нижний ряд → XIAO (TB выше, XIAO ниже; пишем «tb -> xiao») ---
-  tb6612:PVCC:s  -> xiao:P3V3:n  [color="#FB8C00" label="3V3 → VCC"];
-  tb6612:PSTBY:s -> xiao:P3V3:n  [color="#FB8C00" label="3V3 → STBY"];
-  tb6612:PGNDb:s -> xiao:PGND:n  [color="#212121" label="GND"];
-  tb6612:PPWMA:s -> xiao:PD5:n   [color="#7CB342" label="D5 → PWMA"];
-  tb6612:PAIN1:s -> xiao:PD0:n   [color="#0288D1" label="D0 → AIN1"];
-  tb6612:PAIN2:s -> xiao:PD1:n   [color="#0288D1" label="D1 → AIN2"];
-  tb6612:PPWMB:s -> xiao:PD4:n   [color="#7CB342" label="D4 → PWMB"];
-  tb6612:PBIN1:s -> xiao:PD2:n   [color="#0288D1" label="D2 → BIN1"];
-  tb6612:PBIN2:s -> xiao:PD3:n   [color="#0288D1" label="D3 → BIN2"];
+  // --- 3V3 ШИНА: XIAO 3V3 (источник) → шина → потребители ---
+  xiao:P3V3:w   -> v3v3_rail:s     [color="#FB8C00" penwidth=1.6 xlabel="3V3 источник"];
+  v3v3_rail:n   -> tb6612:PVCC:s   [color="#FB8C00" xlabel="VCC"];
+  v3v3_rail:n   -> tb6612:PSTBY:s  [color="#FB8C00" xlabel="STBY"];
+  v3v3_rail:s   -> oled:POVCC:n    [color="#FB8C00" xlabel="OLED VCC"];
+  v3v3_rail:s   -> oled:PORES:n    [color="#FB8C00" xlabel="OLED RES"];
 
-  // --- OLED: XIAO выше, OLED ниже (XIAO :s → OLED :n) ---
-  xiao:P3V3:s  -> oled:POVCC:n  [color="#FB8C00" label="3V3 → VCC"];
-  xiao:P3V3:s  -> oled:PORES:n  [color="#FB8C00" label="3V3 → RES"];
-  xiao:PGND:s  -> oled:POGND:n  [color="#212121" label="GND"];
-  xiao:PD8:s   -> oled:POSCK:n  [color="#8E24AA" label="D8 → SCK"];
-  xiao:PD10:s  -> oled:POMOSI:n [color="#8E24AA" label="D10 → MOSI"];
-  xiao:PD7:s   -> oled:PODC:n   [color="#D81B60" label="D7 → DC"];
-  xiao:PD6:s   -> oled:POCS:n   [color="#D81B60" label="D6 → CS"];
+  // --- GND ШИНА: все потребители → шина ---
+  bat:Pminus:s     -> gnd_rail:n   [color="#212121"];
+  buck:POUTn:s     -> gnd_rail:n   [color="#212121"];
+  tb6612:PGNDt:s   -> gnd_rail:n   [color="#212121"];
+  tb6612:PGNDb:s   -> gnd_rail:n   [color="#212121"];
+  xiao:PGND:w      -> gnd_rail:n   [color="#212121"];
+  oled:POGND:s     -> gnd_rail:n   [color="#212121"];
+
+  // --- Моторы → TB6612 (прямые провода) ---
+  ml:PMplus:s   -> tb6612:PAO1:n   [color="#455A64" penwidth=1.8 xlabel="AO1"];
+  ml:PMminus:s  -> tb6612:PAO2:n   [color="#455A64" penwidth=1.8 xlabel="AO2"];
+  mr:PMplus:s   -> tb6612:PBO1:n   [color="#455A64" penwidth=1.8 xlabel="BO1"];
+  mr:PMminus:s  -> tb6612:PBO2:n   [color="#455A64" penwidth=1.8 xlabel="BO2"];
+
+  // --- Логика: XIAO правая колонка (:e) → TB6612 нижний ряд (:s) ---
+  tb6612:PPWMA:s -> xiao:PD5:e   [color="#7CB342" xlabel="D5→PWMA"];
+  tb6612:PAIN1:s -> xiao:PD0:e   [color="#0288D1" xlabel="D0→AIN1"];
+  tb6612:PAIN2:s -> xiao:PD1:e   [color="#0288D1" xlabel="D1→AIN2"];
+  tb6612:PPWMB:s -> xiao:PD4:e   [color="#7CB342" xlabel="D4→PWMB"];
+  tb6612:PBIN1:s -> xiao:PD2:e   [color="#0288D1" xlabel="D2→BIN1"];
+  tb6612:PBIN2:s -> xiao:PD3:e   [color="#0288D1" xlabel="D3→BIN2"];
+
+  // --- OLED SPI: XIAO левая колонка (:w) → OLED сверху (:n); D6 :s ---
+  xiao:PD8:w   -> oled:POSCK:n  [color="#8E24AA" xlabel="D8→SCK"];
+  xiao:PD10:w  -> oled:POMOSI:n [color="#8E24AA" xlabel="D10→MOSI"];
+  xiao:PD7:w   -> oled:PODC:n   [color="#D81B60" xlabel="D7→DC"];
+  xiao:PD6:s   -> oled:POCS:n   [color="#D81B60" xlabel="D6→CS"];
 }
