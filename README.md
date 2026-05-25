@@ -30,7 +30,7 @@
 
 Скопируйте `xiao_cam_stream/secrets.h.example` → `xiao_cam_stream/secrets.h` (файл в `.gitignore`).
 
-**Схема пайки** (плата → драйвер → моторы), готовый PDF для распечатки:
+**Схема пайки** (плата → драйвер моторов → моторы → OLED-экран), готовый PDF для распечатки:
 [`docs/hardware/wiring-xiao-tb6612.pdf`](docs/hardware/wiring-xiao-tb6612.pdf).
 
 ## Безопасность
