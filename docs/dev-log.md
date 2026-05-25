@@ -6,6 +6,56 @@
 
 ---
 
+## 2026-05-25 — OLED-драйвер в прошивке + фикс конфликта пинов D6/D7/D8
+
+Пользователь собрал железо по схеме, но **OLED не работает и моторы не отвечают**.
+Диагностика показала две причины:
+
+**1. OLED-драйвера не было в прошивке вообще.** `grep -i 'oled\|ssd1306\|u8g2'` по
+`xiao_cam_stream/` — 0 совпадений. Схема была нарисована корректно, но код
+SSD1306 никто не писал. Добавил:
+- `#include <U8g2lib.h>`
+- Глобал `U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI gOled(R0, SCK=D8, MOSI=D10, CS=D6, DC=D7, reset=NONE)` —
+  Software SPI, чтобы не разруливать ESP32-S3 HW-SPI remap.
+- `oledInit()` после `xiaoDriveInit()` в `setup()`.
+- `oledTick()` в `loop()` каждые 500 мс: IP/RSSI/channel, cmd_l/cmd_r/WD-флаг,
+  счётчики кадров камеры, мкр-уровень в dBFS, temperatureRead°C.
+
+**2. Конфликт пинов D6/D7/D8.** В `drive_config.h` пины энкодеров стояли как
+`DRIVE_ENC_L_A=43, _B=44, R_A=7, R_B=8` — а это ровно те же D6/D7/D8, которые
+схема отдаёт OLED под CS/DC/SCK. `xiao_drive.cpp` ставил `attachInterrupt` на
+D7/D8, и любая SPI-транзакция U8g2 на тех же пинах сразу триггерила ISR
+энкодеров → возможные виснущие прерывания, шум, фантомные движения, и
+конкретно — OLED никогда не получал чистого clock. ISR-гарды в `xiao_drive.h`
+(`#if DRIVE_ENC_L_A > 0`) корректные, поэтому достаточно занулить все четыре:
+```
+#define DRIVE_ENC_L_A 0
+#define DRIVE_ENC_L_B 0
+#define DRIVE_ENC_R_A 0
+#define DRIVE_ENC_R_B 0
+```
+Комментарий-предупреждение в шапке зафиксирован: «энкодеры отключены — пины
+отданы под OLED». Это решение явное (одна правка в одном месте), не неявное
+«забыл подключить».
+
+**Компиляция:** `arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi`
+прошла, EXIT=0. Скетч 35% флеша (1.19 МБ из 3.34 МБ), глобалы 19% RAM.
+Библиотека `U8g2@2.35.30` подтянулась автоматически в `tools/arduino-cli/.../libraries/`.
+
+**Прошивка ОТЛОЖЕНА — USB-проблема:** плата на COM5 в статусе `CM_PROB_PHANTOM`
+(`pnputil`: «The device is not connected»). Физическое USB-соединение не
+живо — либо кабель power-only, либо плохой контакт Type-C, либо плата
+повисла без USB CDC после прошлой прошивки. Решение — действия пользователя:
+переподключить кабель / попробовать другой / зажать BOOT при подключении.
+
+Как только USB вернётся — `arduino-cli upload --port COM5` и проверка
+на железе (OLED должен показать IP сразу после подключения к WiFi; моторы
+должны реагировать на `/drive?l=120&r=120` из Android-приложения).
+
+Файлы: `xiao_cam_stream/xiao_cam_stream.ino`, `xiao_cam_stream/drive_config.h`.
+
+---
+
 ## 2026-05-25 — Схема пайки: переход на schemdraw (Python), стиль KiCad
 
 После четырёх итераций с Graphviz (rankdir/splines=ortho/xlabel/rails) —

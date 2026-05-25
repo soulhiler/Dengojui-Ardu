@@ -37,6 +37,7 @@
 #include <WiFiMulti.h>
 #include <WiFiServer.h>
 #include <WebServer.h>
+#include <U8g2lib.h>     // OLED SSD1306 (SPI)
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
 #include <stdio.h>
@@ -1188,6 +1189,80 @@ static void wifiMaintainSta() {
   }
 }
 
+// ===================== OLED SSD1306 (SPI) =====================
+// Пины из docs/hardware/wiring.png: CS=D6/GPIO43, DC=D7/GPIO44,
+//   SCK=D8/GPIO7, MOSI=D10/GPIO9, RES=на 3V3 (U8X8_PIN_NONE), VCC=3V3, GND=общий.
+// Используем софт-SPI (U8g2 _SW_SPI) — не требует переназначения HW-SPI.
+static U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI gOled(
+    U8G2_R0,
+    /*clock=*/ 7,    // D8 (SCK)
+    /*data =*/ 9,    // D10 (MOSI)
+    /*cs   =*/ 43,   // D6
+    /*dc   =*/ 44,   // D7
+    /*reset=*/ U8X8_PIN_NONE
+);
+static bool gOledOk = false;
+static uint32_t gOledLastDrawMs = 0;
+
+static void oledInit() {
+  // begin() возвращает 1 при успехе у U8g2 SSD1306 (через SH-проверку I²C/SPI).
+  // Для SPI-вариантов begin() обычно всегда успешен — модуль не отвечает по шине.
+  gOled.begin();
+  gOledOk = true;
+  gOled.setFont(u8g2_font_6x10_tr);
+  gOled.clearBuffer();
+  gOled.drawStr(0, 12, "XIAO Dengozhuy");
+  gOled.drawStr(0, 26, "booting...");
+  gOled.sendBuffer();
+  Serial.println(F("oled: SSD1306 SPI init (CS=D6 DC=D7 SCK=D8 MOSI=D10)"));
+}
+
+static void oledTick() {
+  if (!gOledOk) return;
+  const uint32_t now = millis();
+  if (now - gOledLastDrawMs < 500u) return;
+  gOledLastDrawMs = now;
+
+  gOled.clearBuffer();
+  gOled.setFont(u8g2_font_6x10_tr);
+
+  char buf[40];
+
+  // 1: WiFi IP / статус
+  if (WiFi.status() == WL_CONNECTED) {
+    snprintf(buf, sizeof(buf), "%s", WiFi.localIP().toString().c_str());
+    gOled.drawStr(0, 10, buf);
+    snprintf(buf, sizeof(buf), "RSSI %d ch%d", (int)WiFi.RSSI(), (int)WiFi.channel());
+    gOled.drawStr(0, 22, buf);
+  } else {
+    gOled.drawStr(0, 10, "WiFi: connecting");
+    gOled.drawStr(0, 22, WiFi.SSID().c_str());
+  }
+
+  // 3: привод L/R
+#if XIAO_DRIVE_ENABLE
+  XiaoDriveState ds{};
+  xiaoDriveGetState(&ds);
+  snprintf(buf, sizeof(buf), "Drv L%4d R%4d", (int)ds.cmd_l, (int)ds.cmd_r);
+  gOled.drawStr(0, 34, buf);
+  if (ds.watchdog_stop) {
+    gOled.drawStr(92, 34, "WD");
+  }
+#endif
+
+  // 4: камера (стримленые кадры, неудачи)
+  snprintf(buf, sizeof(buf), "Cam %lu fail %lu",
+           (unsigned long)g_streamFrameCount, (unsigned long)g_camFailCount);
+  gOled.drawStr(0, 46, buf);
+
+  // 5: микрофон + температура
+  snprintf(buf, sizeof(buf), "Mic %4.0fdB T %.0fC",
+           (double)gMicDbfs, (double)temperatureRead());
+  gOled.drawStr(0, 58, buf);
+
+  gOled.sendBuffer();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(800);
@@ -1203,6 +1278,9 @@ void setup() {
   Serial.println("Camera OK");
 
   xiaoDriveInit();
+
+  // OLED — после xiaoDriveInit (пины уже не претендуют на D6/D7/D8 у энкодеров)
+  oledInit();
 
   telemetryMicInit();
 #if XIAO_TELEM_HAVE_PDM
@@ -1320,6 +1398,7 @@ void loop() {
   telemetryMicTick();
   xiaoDriveTick();
   statusLedTick();
+  oledTick();
   telemetryPrintSerialIfDue();
   if (gHttpServerStarted) {
     server.handleClient();

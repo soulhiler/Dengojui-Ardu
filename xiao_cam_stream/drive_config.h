@@ -23,10 +23,12 @@
 #define DRIVE_L_DIR 1
 #define DRIVE_R_DIR 3
 
-#define DRIVE_ENC_L_A 43  /* D6 */
-#define DRIVE_ENC_L_B 44  /* D7 */
-#define DRIVE_ENC_R_A 7   /* D8 */
-#define DRIVE_ENC_R_B 8   /* D9 */
+/* Энкодеры ОТКЛЮЧЕНЫ — пины D6/D7/D8 отданы под OLED (CS=D6, DC=D7, SCK=D8).
+   ISR-гард в xiao_drive.h: #if DRIVE_ENC_L_A > 0 ... — при 0 прерывание не ставится. */
+#define DRIVE_ENC_L_A 0
+#define DRIVE_ENC_L_B 0
+#define DRIVE_ENC_R_A 0
+#define DRIVE_ENC_R_B 0
 /** Антидребезг энкодера (мкс); 0 = выкл */
 #define DRIVE_ENC_DEBOUNCE_US 150
 
