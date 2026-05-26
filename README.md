@@ -32,8 +32,17 @@
 
 **Схема пайки** (плата → драйвер моторов → моторы → OLED-экран):
 - PDF для распечатки: [`docs/hardware/wiring-xiao-tb6612.pdf`](docs/hardware/wiring-xiao-tb6612.pdf)
-- PNG-превью прямо в репо: [`docs/hardware/wiring.png`](docs/hardware/wiring.png)
-- Исходник (Graphviz `dot`, редактируемый): [`docs/hardware/wiring.gv`](docs/hardware/wiring.gv) — пересборка: `dot -Tpdf docs/hardware/wiring.gv -o docs/hardware/wiring-xiao-tb6612.pdf`
+- PNG-превью прямо в репо: [`docs/hardware/wiring-xiao-tb6612.png`](docs/hardware/wiring-xiao-tb6612.png)
+- Исходник (Python `schemdraw`, стиль KiCad): [`docs/hardware/build_wiring.py`](docs/hardware/build_wiring.py) — пересборка: `python docs/hardware/build_wiring.py`
+
+## ⚠️ Безопасность питания (читать ПЕРЕД первой пайкой)
+
+**Один раз уже сожгли плату XIAO ESP32-S3 Sense — подробный разбор: [`docs/dev-log.md`](docs/dev-log.md), запись 2026-05-26.** Чтобы не повторилось:
+
+1. **НИКОГДА не подключай USB к ПК и батарею 7.4 В одновременно.** Общий минус между ПК и батареей создаёт петлю земли через USB GND, уравнивающий ток пробивает ESD-защиту USB-PHY ESP32-S3 → плата умирает (красный диод горит, чип не отвечает). Прошиваешь USB — отсоединяй батарею. Тестируешь робота — отсоединяй USB.
+2. **ВСЕГДА измеряй выход Buck DC-DC мультиметром ДО подключения к XIAO 5V pin.** Цель: 5.0 В ± 0.1 В без нагрузки. Buck с AliExpress приходит с потенциометром в случайном положении (часто 12+ В) — без проверки сжигаешь плату с первой подачи.
+3. **Цвет проводов = функция:** BAT+ толстый красный/жёлтый; Buck OUT+ (5 В) тонкий красный/оранжевый; 3V3 оранжевый; GND **только чёрный**. Никогда не использовать один цвет для разных напряжений.
+4. **Желательно:** Schottky-диод (SS14) последовательно между Buck OUT+ и XIAO 5V (анод к Buck) — защита от обратки с USB; PPTC-предохранитель 1–2 А на BAT+; TVS-диоды (USBLC6-2SC6) на USB D+/D−.
 
 ## Безопасность
 
