@@ -8,6 +8,7 @@
 
 | Путь | Назначение |
 |------|------------|
+| `arduino_motor_test/` | **UNO + TB6612 по USB:** прошивка, веб‑джойстик, Serial — см. **`docs/arduino-motor-uno.md`** |
 | `xiao_cam_stream/` | Основной скетч: Wi‑Fi, MJPEG, `/telemetry`, `/control`, `/drive`, PDM TCP :81, TB6612 (см. `drive_config.h`) |
 | `xiao_cam_stream/xiao_drive.h`, `drive_config.h` | Моторы + энкодеры; TB6612 или sign‑magnitude |
 | `xiao_ble_mic_test/` | Тест BLE и PDM‑микрофона |
@@ -20,12 +21,25 @@
 | `tools/start_xiao_cam_proxy.ps1` | Фоновый прокси 8898 + опц. `/control` |
 | `tools/bootstrap_arduino_cli.ps1`, `install_esp32_core.ps1` | `arduino-cli` и ядро `esp32:esp32` |
 | `tools/upload_xiao_retry.ps1` | Повторная заливка при занятом COM |
+| `tools/uno_motor_web.py`, `start_uno_motor_panel.ps1` | Веб‑панель джойстика для UNO (http://127.0.0.1:8765/) |
+| `tools/uno_motor_serial.py` | Serial CLI для UNO+TB6612 |
+| `docs/arduino-motor-uno.md` | Документация раздела UNO + моторы |
 | `tools/build_apk.bat` в `android/XiaoRobot/` | См. `android/XiaoRobot/README.md` (JDK 17 / JBR) |
 | `tools/xiao_wifi_ota.ps1` | OTA по Wi‑Fi |
 
 Скопируйте `xiao_cam_stream/secrets.h.example` → `xiao_cam_stream/secrets.h` (файл в `.gitignore`).
 
-## Прошивка
+## Arduino UNO + TB6612 (USB, тест моторов)
+
+Без XIAO/Wi‑Fi: Uno, драйвер TB6612, джойстик в браузере.
+
+```powershell
+.\tools\start_uno_motor_panel.ps1 COM3
+```
+
+→ http://127.0.0.1:8765/ · прошивка и провода: **`docs/arduino-motor-uno.md`**, каталог **`arduino_motor_test/`**.
+
+## Прошивка XIAO
 
 - FQBN: `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`
 - Версия: поля **`fw_version`** / **`fw_build`** в `GET /telemetry`
