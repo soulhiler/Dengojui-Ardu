@@ -14,6 +14,7 @@
 | `xiao_cam_viewer.html` | Подсказка по просмотру потока |
 | `android/XiaoRobot/` | Android: камера (`/stream`), мик (TCP `:81`), джойстик → `/drive` |
 | `docs/cursor-chat-archives/` | Архив переписок Cursor (`.jsonl` + `.zip`) |
+| `docs/hardware/` | Анализ железа: разбор плат-кандидатов, аналоги, выводы и рекомендации |
 | `tools/xiao_cam_proxy.py` | Прокси с платы на `localhost` (Cursor/браузер) |
 | `tools/xiao_serial_telemetry.py` | Телеметрия: Serial / HTTP / BLE |
 | `tools/xiao_flash_and_telemetry.ps1` | Прошивка по USB + авто‑порт USB‑JTAG + повторы upload |
