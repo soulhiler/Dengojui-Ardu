@@ -1,0 +1,34 @@
+# brain/ — ИИ-«мозг» робота (Фаза 4)
+
+Замкнутый контур `perceive → decide → govern → act` поверх существующего
+HTTP-контракта платы. Прошивку менять не нужно. Только stdlib
+(Pillow — опционально для распознавателя `brightness`).
+
+## Запуск
+
+ПК в той же Wi-Fi, что и плата:
+
+```bash
+py -3 brain/brain.py 192.168.1.50                 # dummy-распознаватель
+py -3 brain/brain.py 192.168.1.50 --token СЕКРЕТ  # если включён XIAO_API_TOKEN
+py -3 brain/brain.py 192.168.1.50 --recognizer brightness
+py -3 brain/brain.py 127.0.0.1 --dry-run --once   # решения без отправки (без платы)
+```
+
+## Состав
+
+| Файл | Назначение |
+|------|------------|
+| `brain.py` | CLI + главный цикл, аварийный стоп при потере связи |
+| `robot.py` | клиент платы (`/telemetry`, `/capture`, `/drive`, токен) |
+| `perception.py` | `Recognizer` + `Dummy` / `Brightness` (модель — новой реализацией) |
+| `safety.py` | `SafetyGovernor` — рефлексы > перцепция, темп ≤ watchdog |
+| `test_safety.py` | юнит-тесты governor (без железа) |
+
+## Тесты
+
+```bash
+py -3 -m unittest discover -s brain -p "test_*.py"
+```
+
+Контракт и модель безопасности: [`../docs/brain-api.md`](../docs/brain-api.md).
