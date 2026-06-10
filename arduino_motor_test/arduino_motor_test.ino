@@ -3,7 +3,7 @@
  * Временный скетч, пока ждём новые XIAO ESP32-S3 Sense.
  * Схема подключения: docs/hardware/wiring-arduino-motor-test.pdf
  *
- * Цикл теста (5 шагов с паузами):
+ * Цикл теста (8 шагов с паузами):
  *   1) Forward (вперёд оба мотора, PWM=150)  ─ 1.5 с
  *   2) Stop                                    ─ 1.0 с
  *   3) Backward (назад оба)                    ─ 1.5 с
@@ -57,7 +57,8 @@ void motorA(int16_t speed) {
     digitalWrite(PIN_AIN2, HIGH);
     speed = -speed;
   } else {
-    // Активное торможение: оба IN1=IN2=HIGH, PWM=0 (или просто PWM=0 и оба LOW = coast)
+    // Стоп накатом (coast): оба IN1=IN2=LOW + PWM=0.
+    // Для активного торможения было бы IN1=IN2=HIGH — здесь не нужно.
     digitalWrite(PIN_AIN1, LOW);
     digitalWrite(PIN_AIN2, LOW);
   }
