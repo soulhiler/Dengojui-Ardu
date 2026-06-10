@@ -23,8 +23,10 @@
  * OTA по Wi‑Fi: в secrets.h задай #define XIAO_OTA_PASSWORD "…" (не пустой). Тогда с ПК в той же LAN:
  *   arduino-cli upload -p IP_ПЛАТЫ --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi xiao_cam_stream
  *   или: .\\tools\\xiao_wifi_ota.ps1  (пароль в $env:XIAO_OTA_PASSWORD)
+ *   или: py -3 tools\\xiao_http_ota.py  (POST /update?pwd=… — если TCP 3232 недоступен)
  * (пароль спросит CLI или задай в конфиге). Схема разделов default_8MB уже с ota_0 / ota_1.
  * Версия прошивки (счётчик репозитория): поля fw_build / fw_version в /telemetry — см. kXiaoFwBuild в .ino.
+ * Без модуля камеры (разъём не распаян): initCamera() не блокирует Wi‑Fi/BLE/HTTP — cam_ok=0, MJPEG недоступен.
  */
 
 #include <Arduino.h>
@@ -64,14 +66,20 @@
 // В secrets.h можно задать #define XIAO_WIFI_SSID_1 / XIAO_WIFI_SSID_2 — точное имя сети с роутера (2.4 ГГц).
 #include "secrets.h"
 #include "xiao_drive.h"
+#include "xiao_motor_audio.h"
+#include "xiao_tof.h"
+#include "xiao_http_ota.h"
 
 #ifndef XIAO_OTA_PASSWORD
 #define XIAO_OTA_PASSWORD ""
 #endif
+#ifndef XIAO_OTA_ENABLE
+#define XIAO_OTA_ENABLE 0
+#endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 9u;
-static constexpr char kXiaoFwVersion[] = "1.1.0";
+static constexpr uint32_t kXiaoFwBuild = 15u;
+static constexpr char kXiaoFwVersion[] = "1.2.4";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -91,6 +99,7 @@ static constexpr uint32_t kTelemetrySerialMs = 1500;
 
 WebServer server(80);
 WiFiMulti wifiMulti;
+static bool gCamOk = false;
 static bool gHttpServerStarted = false;
 static bool gArduinoOtaReady = false;
 
@@ -460,16 +469,18 @@ static void handleRoot() {
   html += ip;
   html += F("/</b></p>");
   html += F("<p>Видео (MJPEG):</p>");
-  if (gCtrlCamEnabled) {
+  if (gCamOk && gCtrlCamEnabled) {
     html += F("<p><img src=\"/stream\" style=\"max-width:100%;height:auto;border:1px solid #0a0\"></p>");
     html += F("<p>Снимок:</p>");
     html += F("<p><img src=\"/capture\" style=\"max-width:100%;height:auto;border:1px solid #ccc\"></p>");
+  } else if (!gCamOk) {
+    html += F("<p><em>Камера не подключена (нет модуля / разъём). Остальное: /telemetry, /drive.</em></p>");
   } else {
     html += F("<p><em>Камера выключена (GET /control?cam=1)</em></p>");
   }
   html += F("<p><a href=\"/stream\">/stream</a> · <a href=\"/capture\">/capture</a> · <a href=\"/telemetry\">/telemetry</a></p>");
   html += F("<p><small>Mic PCM (TCP 81, s16le 16 kHz mono) — через прокси: <code>/mic_s16</code></small></p>");
-  html += F("<p><small>Привод: <code>/drive?l=0&r=0</code> · <code>/drive?stop=1</code> · пины <code>drive_config.h</code></small></p>");
+  html += F("<p><small>Привод: <code>/drive?l=0&r=0</code> · ToF <code>/status</code> · карта <code>/scan360?steps=30</code> · звук <code>/beep</code> <code>/melody</code></small></p>");
   html += F("</body></html>");
   server.send(200, "text/html; charset=utf-8", html);
 }
@@ -479,12 +490,12 @@ static void handleStream() {
   if (!client || !client.connected()) {
     return;
   }
-  if (!gCtrlCamEnabled) {
+  if (!gCamOk || !gCtrlCamEnabled) {
     client.println(F("HTTP/1.1 503 Service Unavailable"));
     client.println(F("Content-Type: text/plain; charset=utf-8"));
     client.println(F("Connection: close"));
     client.println();
-    client.println(F("camera disabled (GET /control?cam=1)"));
+    client.println(gCamOk ? F("camera disabled (GET /control?cam=1)") : F("camera hardware not present"));
     return;
   }
 
@@ -529,10 +540,11 @@ static void handleStream() {
 }
 
 static void handleCapture() {
-  if (!gCtrlCamEnabled) {
+  if (!gCamOk || !gCtrlCamEnabled) {
     server.sendHeader(F("Cache-Control"), F("no-store"));
     server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
-    server.send(503, "text/plain; charset=utf-8", "camera disabled (GET /control?cam=1)");
+    server.send(503, "text/plain; charset=utf-8",
+                  gCamOk ? "camera disabled (GET /control?cam=1)" : "camera hardware not present");
     return;
   }
   camera_fb_t *fb = esp_camera_fb_get();
@@ -848,6 +860,7 @@ static String telemetryBuildJson() {
       telemetryAppendUInt(j, comma, "cam_pid", 0);
     }
   }
+  telemetryAppendUInt(j, comma, "cam_ok", gCamOk ? 1u : 0u);
   telemetryAppendUInt(j, comma, "cam_frames_stream", g_streamFrameCount);
   telemetryAppendUInt(j, comma, "cam_captures", g_captureCount);
 
@@ -883,6 +896,7 @@ static String telemetryBuildJson() {
   telemetryAppendUInt(j, comma, "ctrl_wifi", gCtrlWifiHiPower ? 1u : 0u);
 
   xiaoDriveAppendTelemetry(j, comma);
+  xiaoTofAppendTelemetry(j, comma);
 
   const float tchip = temperatureRead();
   if (!isnan(tchip) && tchip > -40.0f && tchip < 130.0f) {
@@ -981,7 +995,8 @@ static void applyWifiPsFromFlag() {
 
 static void handleControl() {
   if (server.hasArg("cam")) {
-    gCtrlCamEnabled = server.arg("cam").toInt() != 0;
+    const bool want = server.arg("cam").toInt() != 0;
+    gCtrlCamEnabled = gCamOk && want;
   }
   if (server.hasArg("mic")) {
     gCtrlMicEnabled = server.arg("mic").toInt() != 0;
@@ -1074,6 +1089,76 @@ static void handleDrive() {
   server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
   server.send(200, F("application/json; charset=utf-8"), j);
 }
+
+static void handleRobotStatus() {
+  String j = F("{\"ok\":1");
+  bool comma = true;
+  xiaoTofAppendTelemetry(j, comma);
+  XiaoDriveState ds{};
+  xiaoDriveGetState(&ds);
+  j += F(",\"cmd_l\":");
+  j += String(ds.cmd_l);
+  j += F(",\"cmd_r\":");
+  j += String(ds.cmd_r);
+  j += F(",\"enc_l\":");
+  j += String(ds.enc_l);
+  j += F(",\"enc_r\":");
+  j += String(ds.enc_r);
+  j += F("}");
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(200, F("application/json; charset=utf-8"), j);
+}
+
+static void handleScan360() {
+  if (!xiaoTofIsOk()) {
+    server.send(503, F("application/json; charset=utf-8"), F("{\"ok\":0,\"error\":\"tof\"}"));
+    return;
+  }
+  int steps = server.hasArg("steps") ? server.arg("steps").toInt() : 30;
+  if (steps < 8) {
+    steps = 8;
+  }
+  if (steps > 72) {
+    steps = 72;
+  }
+  XiaoScanPoint pts[72];
+  const uint8_t n = xiaoTofRunScan360(static_cast<uint8_t>(steps), pts, 72);
+  String j = F("{\"ok\":1,\"steps\":");
+  j += String(n);
+  j += F(",\"points\":[");
+  for (uint8_t i = 0; i < n; ++i) {
+    if (i) {
+      j += ',';
+    }
+    j += F("{\"ang\":");
+    j += String(pts[i].ang);
+    j += F(",\"mm\":");
+    j += String(pts[i].mm);
+    j += F(",\"valid\":");
+    j += pts[i].valid ? F("1") : F("0");
+    j += F("}");
+  }
+  j += F("]}");
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(200, F("application/json; charset=utf-8"), j);
+}
+
+static void handleBeep() {
+  const uint16_t hz = server.hasArg("hz") ? static_cast<uint16_t>(server.arg("hz").toInt()) : 880;
+  const uint16_t ms = server.hasArg("ms") ? static_cast<uint16_t>(server.arg("ms").toInt()) : 250;
+  const String ch = server.hasArg("ch") ? server.arg("ch") : F("A");
+  xiaoAudioBeepHttp(hz, ms, ch.c_str());
+  server.send(200, F("application/json; charset=utf-8"), F("{\"ok\":1}"));
+}
+
+static void handleMelody() {
+  const uint8_t id = server.hasArg("id") ? static_cast<uint8_t>(server.arg("id").toInt()) : 0;
+  const String ch = server.hasArg("ch") ? server.arg("ch") : F("A");
+  xiaoAudioMelodyHttp(id, ch.c_str());
+  server.send(200, F("application/json; charset=utf-8"), F("{\"ok\":1}"));
+}
 #endif
 
 static void handleTelemetry() {
@@ -1128,19 +1213,23 @@ static void wifiMaintainSta() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(0);
   delay(800);
   statusLedInit();
   statusLedBootHello();
 
   statusLedSet(StatusLed::CameraInit);
-  if (!initCamera()) {
-    Serial.println("Camera not ready — проверь Sense-плату, PSRAM=OPI в настройках платы, антенну.");
-    statusLedSet(StatusLed::ErrorCamera);
-    return;
+  gCamOk = initCamera();
+  if (gCamOk) {
+    Serial.println(F("Camera OK"));
+  } else {
+    gCtrlCamEnabled = false;
+    statusLedInitHw();
+    Serial.println(F("Camera: нет модуля — продолжаем без MJPEG (Wi-Fi, BLE, /telemetry, /drive)."));
   }
-  Serial.println("Camera OK");
 
   xiaoDriveInit();
+  xiaoTofInit();
 
   telemetryMicInit();
 #if XIAO_TELEM_HAVE_PDM
@@ -1206,7 +1295,7 @@ void setup() {
     Serial.println(F("mDNS: ошибка инициализации"));
   }
 
-  if (XIAO_OTA_PASSWORD[0] != '\0') {
+  if (XIAO_OTA_ENABLE) {
     ArduinoOTA.setHostname("xiao-cam");
     ArduinoOTA.setPassword(XIAO_OTA_PASSWORD);
     ArduinoOTA.onStart([]() { Serial.println(F("OTA: начало")); });
@@ -1228,7 +1317,12 @@ void setup() {
   server.on("/control", HTTP_GET, handleControl);
 #if XIAO_DRIVE_ENABLE
   server.on("/drive", HTTP_GET, handleDrive);
+  server.on("/status", HTTP_GET, handleRobotStatus);
+  server.on("/scan360", HTTP_GET, handleScan360);
+  server.on("/beep", HTTP_GET, handleBeep);
+  server.on("/melody", HTTP_GET, handleMelody);
 #endif
+  xiaoHttpOtaRegister();
   server.begin();
   gHttpServerStarted = true;
 #if XIAO_TELEM_HAVE_PDM
@@ -1246,7 +1340,7 @@ void setup() {
   }
 #endif
   statusLedSet(StatusLed::Running);
-  Serial.println(F("HTTP server started (/) (/stream) (/capture) (/telemetry) (/control) (/drive)"));
+  Serial.println(F("HTTP: /telemetry /drive /status /scan360 /beep /melody"));
   Serial.println(F("Telemetry: JSON lines in Serial every 1.5s; snapshot GET /telemetry"));
 }
 
@@ -1256,6 +1350,8 @@ void loop() {
     ArduinoOTA.handle();
   }
   telemetryMicTick();
+  xiaoTofTick();
+  xiaoAudioTick();
   xiaoDriveTick();
   statusLedTick();
   telemetryPrintSerialIfDue();

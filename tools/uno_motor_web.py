@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -27,7 +29,7 @@ HTML = """<!DOCTYPE html>
 <title>UNO моторы</title>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 16px; max-width: 440px;
+  body { font-family: system-ui, sans-serif; margin: 16px; max-width: 520px;
     background: #1e1e1e; color: #e0e0e0; user-select: none; }
   h1 { font-size: 1.2rem; margin: 0 0 6px; }
   .hint { font-size: 12px; color: #999; margin-bottom: 10px; }
@@ -102,12 +104,39 @@ HTML = """<!DOCTYPE html>
   .map-meta { font-size: 11px; color: #777; margin: 8px 0; text-align: center; }
   button.scan { background: #1a4d3a; border-color: #3dff9a; }
   button.scan:disabled { opacity: 0.5; cursor: wait; }
+  .sys-wrap {
+    margin: 14px 0; padding: 12px;
+    background: #161616; border: 1px solid #333; border-radius: 10px;
+    font-size: 12px;
+  }
+  .sys-wrap h2 { font-size: 0.95rem; margin: 0 0 8px; color: #8ab4e8; }
+  .sys-table { width: 100%; border-collapse: collapse; margin: 6px 0; }
+  .sys-table th, .sys-table td {
+    text-align: left; padding: 4px 6px; border-bottom: 1px solid #2a2a2a;
+    vertical-align: top; font-family: ui-monospace, monospace; font-size: 11px;
+  }
+  .sys-table th { color: #888; font-weight: 600; }
+  .tag-ok { color: #3dff9a; }
+  .tag-busy { color: #ff8a65; }
+  .tag-panel { color: #6eb3f7; }
+  .sys-hint { color: #666; margin: 4px 0 8px; }
 </style>
 </head>
 <body>
 <h1>Управление моторами</h1>
 <p class="hint">Круговой джойстик: вверх/вниз — езда, влево/вправо — поворот. Отпусти — стоп.</p>
 <p id="status">…</p>
+<section class="sys-wrap" aria-label="Порты и процессы">
+  <h2>Система · COM и плата</h2>
+  <p class="sys-hint">Панель: <span id="sysPanelPort" class="tag-panel">—</span> · PID <span id="sysPanelPid">—</span></p>
+  <h3 style="font-size:12px;color:#aaa;margin:10px 0 4px;">COM-порты</h3>
+  <table class="sys-table" id="sysPortsTbl"><thead><tr><th>Порт</th><th>Статус</th><th>Устройство</th></tr></thead><tbody></tbody></table>
+  <h3 style="font-size:12px;color:#aaa;margin:10px 0 4px;">Процессы (serial / python / arduino)</h3>
+  <table class="sys-table" id="sysProcTbl"><thead><tr><th>PID</th><th>Имя</th><th>Команда</th></tr></thead><tbody></tbody></table>
+  <h3 style="font-size:12px;color:#aaa;margin:10px 0 4px;">Пины Arduino UNO (прошивка)</h3>
+  <table class="sys-table" id="sysPinsTbl"><thead><tr><th>Пин</th><th>Назначение</th></tr></thead><tbody></tbody></table>
+  <p class="sys-hint" id="sysUpdated">…</p>
+</section>
 <section class="radar-wrap" aria-label="Радар VL53L0X">
   <h2 class="radar-title">Лазерный дальномер</h2>
   <p class="radar-caption">Сектор обзора ~27° · дальность до 2 м · ось по центру</p>
@@ -569,6 +598,42 @@ audGainEl.onchange = () => sendCmd('again ' + audGainEl.value);
 
 drawRadar(null);
 
+const BOARD_PINS = [
+  ['D2','AIN1 мотор A'], ['D3','PWMA'], ['D4','AIN2'], ['D5','PWMB'],
+  ['D7','BIN1 мотор B'], ['D8','BIN2'], ['D9','STBY драйвер'],
+  ['D6','OLED RES'], ['D10','OLED CS'], ['D11','OLED MOSI'], ['D12','OLED DC'], ['D13','OLED SCK'],
+  ['A4','I2C SDA (VL53L0X)'], ['A5','I2C SCL'], ['A0','напряжение VM']
+];
+
+function renderBoardPins() {
+  const tb = document.querySelector('#sysPinsTbl tbody');
+  tb.innerHTML = BOARD_PINS.map(([p, n]) => '<tr><td>' + p + '</td><td>' + n + '</td></tr>').join('');
+}
+renderBoardPins();
+
+function renderSys(j) {
+  document.getElementById('sysPanelPort').textContent = j.panel_port || '—';
+  document.getElementById('sysPanelPid').textContent = j.panel_pid ?? '—';
+  const pt = document.querySelector('#sysPortsTbl tbody');
+  pt.innerHTML = (j.ports || []).map(p => {
+    let st = p.busy ? '<span class="tag-busy">занят</span>' : '<span class="tag-ok">свободен</span>';
+    if (p.panel) st = '<span class="tag-panel">панель</span>';
+    return '<tr><td>' + p.device + '</td><td>' + st + '</td><td>' + (p.description || '') + '</td></tr>';
+  }).join('') || '<tr><td colspan="3">нет портов</td></tr>';
+  const pr = document.querySelector('#sysProcTbl tbody');
+  pr.innerHTML = (j.processes || []).map(p => {
+    const cmd = (p.cmd || '').length > 80 ? (p.cmd.slice(0, 77) + '…') : (p.cmd || '');
+    return '<tr><td>' + p.pid + '</td><td>' + p.name + '</td><td>' + cmd + '</td></tr>';
+  }).join('') || '<tr><td colspan="3">нет подходящих процессов</td></tr>';
+  document.getElementById('sysUpdated').textContent = 'Обновлено: ' + (j.ts || '');
+}
+
+function refreshSystem() {
+  fetch('/system').then(r => r.json()).then(renderSys).catch(() => {});
+}
+refreshSystem();
+setInterval(refreshSystem, 3000);
+
 fetch('/status').then(r => r.json()).then(j => {
   document.getElementById('status').textContent = 'Порт ' + j.port + ' · джойстик ~20 Гц';
   updateTofUi(j);
@@ -777,6 +842,113 @@ class SerialBus:
         self.ser.close()
 
 
+BOARD_PINS_DOC = [
+    ("D2", "AIN1 мотор A"),
+    ("D3", "PWMA"),
+    ("D4", "AIN2"),
+    ("D5", "PWMB"),
+    ("D7", "BIN1 мотор B"),
+    ("D8", "BIN2"),
+    ("D9", "STBY TB6612"),
+    ("D6", "OLED RES"),
+    ("D10", "OLED CS"),
+    ("D11", "OLED MOSI"),
+    ("D12", "OLED DC"),
+    ("D13", "OLED SCK"),
+    ("A4", "I2C SDA (VL53L0X)"),
+    ("A5", "I2C SCL"),
+    ("A0", "VM напряжение"),
+]
+
+
+def probe_port_free(device: str) -> bool | None:
+    try:
+        s = serial.Serial(device, timeout=0.15)
+        s.close()
+        return True
+    except serial.SerialException:
+        return False
+    except Exception:
+        return None
+
+
+def list_serial_processes() -> list[dict]:
+    if sys.platform != "win32":
+        return []
+    keywords = (
+        "python",
+        "arduino",
+        "serial",
+        "uno_motor",
+        "java.exe",
+        "javaw",
+    )
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | "
+                "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return []
+        raw = json.loads(r.stdout)
+        if isinstance(raw, dict):
+            raw = [raw]
+        out: list[dict] = []
+        for item in raw:
+            name = (item.get("Name") or "").lower()
+            cmd = item.get("CommandLine") or ""
+            cmd_l = cmd.lower()
+            if not any(k in name or k in cmd_l for k in keywords):
+                continue
+            out.append(
+                {
+                    "pid": item.get("ProcessId"),
+                    "name": item.get("Name") or "?",
+                    "cmd": cmd,
+                }
+            )
+        out.sort(key=lambda x: (x.get("name") or "", x.get("pid") or 0))
+        return out
+    except Exception:
+        return []
+
+
+def collect_system_info(panel_port: str) -> dict:
+    ports: list[dict] = []
+    for p in list_ports.comports():
+        dev = p.device
+        is_panel = dev == panel_port
+        busy = None if is_panel else probe_port_free(dev)
+        ports.append(
+            {
+                "device": dev,
+                "description": (p.description or "").strip(),
+                "hwid": (p.hwid or "").strip()[:80],
+                "panel": is_panel,
+                "busy": False if is_panel else (busy is False),
+                "free": True if busy else (False if busy is False else None),
+            }
+        )
+    return {
+        "panel_port": panel_port,
+        "panel_pid": os.getpid(),
+        "ports": ports,
+        "processes": list_serial_processes(),
+        "board_pins": [{"pin": a, "role": b} for a, b in BOARD_PINS_DOC],
+        "ts": time.strftime("%H:%M:%S"),
+    }
+
+
 def parse_tof(lines: list[str]) -> tuple[bool | None, int | None, int | None, str | None, bool | None]:
     for ln in lines:
         if "tof=" in ln and "mm=" in ln and "count=" in ln:
@@ -846,6 +1018,9 @@ def main() -> int:
                     self._json(200, {"ok": True, "points": points, "steps": steps})
                 except Exception as e:
                     self._json(500, {"ok": False, "error": str(e)})
+                return
+            if u.path == "/system":
+                self._json(200, {"ok": True, **collect_system_info(bus.port)})
                 return
             if u.path == "/status":
                 tel = bus.telemetry()

@@ -84,6 +84,12 @@ static void driveMotorSignMag(uint8_t pwmPin, uint8_t dirPin, int16_t cmd) {
 #endif
 
 static void driveApplyMotors() {
+#if defined(XIAO_AUDIO_ENABLE) && XIAO_AUDIO_ENABLE
+  extern bool xiaoAudioIsActive();
+  if (xiaoAudioIsActive()) {
+    return;
+  }
+#endif
   if (!gDrive.enabled || gDrive.watchdog_stop) {
 #if XIAO_DRIVE_DRIVER_TB6612
     driveMotorTb6612(DRIVE_L_PWM, DRIVE_L_IN1, DRIVE_L_IN2, 0);
@@ -192,6 +198,10 @@ static inline void xiaoDriveSetEnabled(bool on) {
 }
 
 static inline void xiaoDriveSetLr(int16_t l, int16_t r) {
+#if defined(XIAO_AUDIO_ENABLE) && XIAO_AUDIO_ENABLE
+  extern void xiaoAudioStop();
+  xiaoAudioStop();
+#endif
   gDrive.cmd_l = driveClamp16(l, -255, 255);
   gDrive.cmd_r = driveClamp16(r, -255, 255);
   gDrive.watchdog_stop = false;

@@ -11,6 +11,13 @@ venv/
 # Portable arduino-cli (скачивается вручную)
 tools/arduino-cli/
 
+# Arduino build artifacts
+xiao_cam_stream/build/
+xiao_cam_stream/build_out/
+
+# Claude worktrees (локально)
+.claude/
+
 # Логи
 tools/_tel_err.txt
 tools/_tel_out.txt

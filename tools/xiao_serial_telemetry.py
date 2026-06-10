@@ -754,6 +754,35 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       <h2 style="color:#f85149">Нет строки JSON с платы</h2>
       <pre id="usbWaitTxt" style="max-height:220px"></pre>
     </div>
+    <div id="robotCard" class="card" style="margin-bottom:12px">
+      <h2>Робот · UNO-стек на XIAO</h2>
+      <p class="hint" style="margin:0 0 10px">Джойстик и скан идут на плату по Wi‑Fi (<code>/board/…</code>). VL53L0X: SDA GPIO20, SCL GPIO9.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+        <div>
+          <canvas id="radar" width="320" height="210" style="background:#0d1117;border-radius:8px;border:1px solid #30363d"></canvas>
+          <div id="radarDist" style="text-align:center;font-size:0.85rem;color:#8b9cb3;margin-top:6px">—</div>
+          <div style="font-size:0.75rem;color:#8b9cb3;margin-top:4px">Профиль: <span id="tofProfile">—</span> · замеров: <span id="tofCount">0</span></div>
+        </div>
+        <div id="joy" style="width:140px;height:140px;border-radius:50%;background:#1c2738;border:2px solid #30363d;position:relative;touch-action:none">
+          <div id="knob" style="width:44px;height:44px;border-radius:50%;background:#5cadff;position:absolute;left:48px;top:48px;box-shadow:0 0 12px rgba(92,173,255,0.5)"></div>
+        </div>
+        <div>
+          <canvas id="mapGrid" width="320" height="320" style="image-rendering:pixelated;background:#0d1117;border-radius:8px;border:1px solid #30363d"></canvas>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" id="btnScan360">Скан 360°</button>
+            <button type="button" id="btnMapClear">Очистить карту</button>
+          </div>
+          <div id="mapStatus" style="font-size:0.75rem;color:#8b9cb3;margin-top:6px">Карта</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" id="btnRobotStop">Стоп</button>
+        <button type="button" id="btnBeep">Beep A</button>
+        <button type="button" id="btnMel1">Мелодия 1</button>
+        <button type="button" id="btnSayPrivet">Привет</button>
+        <button type="button" id="btnMelStop">Стоп звук</button>
+      </div>
+    </div>
     <div id="panels"></div>
     <div id="rawCard" class="card" style="margin-top:12px">
       <h2>Полный JSON</h2>
@@ -805,6 +834,8 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       if (k.startsWith("mic_")) return "Микрофон";
       if (k.startsWith("cam_")) return "Камера";
       if (k.startsWith("ap_")) return "Точка доступа (AP)";
+      if (k.startsWith("tof_")) return "Датчики";
+      if (k.startsWith("drive_") || k === "enc_l" || k === "enc_r") return "Привод";
       if (k.startsWith("wifi_")) return "{WIFI_GROUP_LABEL}";
       if (k.startsWith("part_") || k.startsWith("sketch_") || k.startsWith("flash_")) return "Flash и OTA";
       if (k.startsWith("heap_") || k.startsWith("psram_") || k === "stack_watermark" || k === "rtos_task_count")
@@ -915,7 +946,139 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       elRaw.textContent = JSON.stringify(slim, null, 2);
     }}
 
+    const RADAR = {{ fovDeg: 27, maxMm: 1200 }};
+    function tofIsValid(j) {{
+      if (j.tof_valid === 0 || j.tof_valid === false) return false;
+      const mm = j.tof_mm;
+      return mm != null && mm >= 20 && mm < 8190;
+    }}
+    function drawRadar(mm) {{
+      const canvas = document.getElementById("radar");
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width, h = canvas.height, cx = w / 2, cy = h - 16, maxR = h - 28;
+      const halfFov = (RADAR.fovDeg / 2) * Math.PI / 180;
+      const a0 = -Math.PI / 2 - halfFov, a1 = -Math.PI / 2 + halfFov, ac = -Math.PI / 2;
+      ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, w, h);
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, maxR, a0, a1); ctx.closePath();
+      ctx.fillStyle = "rgba(0,180,120,0.15)"; ctx.fill();
+      const valid = mm != null && mm >= 20 && mm < 8190;
+      const elDist = document.getElementById("radarDist");
+      if (valid) {{
+        const dist = Math.min(mm, RADAR.maxMm);
+        const beamR = maxR * (dist / RADAR.maxMm);
+        ctx.strokeStyle = "#3dff9a"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + beamR * Math.cos(ac), cy + beamR * Math.sin(ac)); ctx.stroke();
+        ctx.fillStyle = "#3dff9a";
+        ctx.beginPath(); ctx.arc(cx + beamR * Math.cos(ac), cy + beamR * Math.sin(ac), 8, 0, Math.PI * 2); ctx.fill();
+        if (elDist) elDist.textContent = dist + " mm";
+      }} else if (elDist) elDist.textContent = "нет цели";
+    }}
+    function updateRobotTof(j) {{
+      const elP = document.getElementById("tofProfile");
+      const elC = document.getElementById("tofCount");
+      if (elP) elP.textContent = (j.tof_profile || "—") + (j.tof_auto ? " · авто" : "");
+      if (elC) elC.textContent = j.tof_count ?? 0;
+      drawRadar(tofIsValid(j) ? j.tof_mm : null);
+    }}
+    const MAP_W = 80, MAP_H = 80, CELL_MM = 50, ROBOT_CX = 40, ROBOT_CY = 40;
+    const mapLog = new Float32Array(MAP_W * MAP_H);
+    const mapCanvas = document.getElementById("mapGrid");
+    const mapCtx = mapCanvas ? mapCanvas.getContext("2d") : null;
+    const mapImg = mapCanvas ? mapCtx.createImageData(MAP_W, MAP_H) : null;
+    function mapIdx(x, y) {{ return (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) ? -1 : y * MAP_W + x; }}
+    function mapAddLog(x, y, d) {{ const i = mapIdx(x, y); if (i >= 0) mapLog[i] = Math.max(-4, Math.min(4, mapLog[i] + d)); }}
+    function mapRay(ang, mm, valid) {{
+      const rad = (ang - 90) * Math.PI / 180, cells = Math.min(mm / CELL_MM, 38);
+      const x1 = Math.round(ROBOT_CX + Math.cos(rad) * cells), y1 = Math.round(ROBOT_CY + Math.sin(rad) * cells);
+      const pts = []; let x0 = ROBOT_CX, y0 = ROBOT_CY;
+      const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+      let err = dx + dy;
+      for (;;) {{ pts.push([x0, y0]); if (x0 === x1 && y0 === y1) break;
+        const e2 = 2 * err; if (e2 >= dy) {{ err += dy; x0 += sx; }} if (e2 <= dx) {{ err += dx; y0 += sy; }} }}
+      for (let i = 0; i < pts.length - 1; i++) mapAddLog(pts[i][0], pts[i][1], -0.45);
+      if (valid && pts.length) mapAddLog(pts[pts.length - 1][0], pts[pts.length - 1][1], 0.85);
+    }}
+    function drawMapGrid() {{
+      if (!mapCanvas || !mapCtx || !mapImg) return;
+      const d = mapImg.data;
+      for (let i = 0; i < mapLog.length; i++) {{
+        const v = mapLog[i]; let r, g, b;
+        if (v > 0.35) {{ r = 230; g = 230; b = 230; }} else if (v < -0.35) {{ r = 40; g = 200; b = 120; }} else {{ r = 35; g = 38; b = 42; }}
+        const p = i * 4; d[p] = r; d[p+1] = g; d[p+2] = b; d[p+3] = 255;
+      }}
+      const off = document.createElement("canvas"); off.width = MAP_W; off.height = MAP_H;
+      off.getContext("2d").putImageData(mapImg, 0, 0);
+      mapCtx.imageSmoothingEnabled = false; mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+      mapCtx.drawImage(off, 0, 0, mapCanvas.width, mapCanvas.height);
+      const sc = mapCanvas.width / MAP_W;
+      mapCtx.fillStyle = "#0e639c"; mapCtx.beginPath();
+      mapCtx.arc(ROBOT_CX * sc, ROBOT_CY * sc, 5, 0, Math.PI * 2); mapCtx.fill();
+    }}
+    async function boardFetch(path, timeoutMs) {{
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), timeoutMs || 8000);
+      try {{
+        const r = await fetch("/board/" + path + "&r=" + Date.now(), {{ cache: "no-store", signal: ac.signal }});
+        const t = await r.text();
+        if (!r.ok) throw new Error("HTTP " + r.status + " " + t.slice(0, 120));
+        return JSON.parse(t);
+      }} finally {{ clearTimeout(to); }}
+    }}
+    async function boardDrive(l, r) {{
+      await boardFetch("drive?l=" + l + "&r=" + r + "&q=1", 3000);
+    }}
+    const joy = document.getElementById("joy"), knob = document.getElementById("knob");
+    let dragging = false, joyL = 0, joyR = 0, driveTimer = null;
+    function centerKnob() {{ if (!knob) return; knob.style.left = "48px"; knob.style.top = "48px"; joyL = 0; joyR = 0; }}
+    if (joy && knob) {{
+      const R = 48;
+      joy.addEventListener("pointerdown", (e) => {{
+        dragging = true; e.preventDefault();
+        if (driveTimer) clearInterval(driveTimer);
+        driveTimer = setInterval(() => {{ if (dragging) boardDrive(joyL, joyR).catch(() => {{}}); }}, 180);
+      }});
+      window.addEventListener("pointermove", (e) => {{
+        if (!dragging) return;
+        const rect = joy.getBoundingClientRect(), cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
+        let dx = e.clientX - cx, dy = e.clientY - cy;
+        const d = Math.hypot(dx, dy); if (d > R) {{ dx *= R/d; dy *= R/d; }}
+        knob.style.left = (48 + dx) + "px"; knob.style.top = (48 + dy) + "px";
+        const y = -dy / R, x = dx / R; joyL = Math.round(255 * Math.max(-1, Math.min(1, y + x)));
+        joyR = Math.round(255 * Math.max(-1, Math.min(1, y - x)));
+      }});
+      window.addEventListener("pointerup", () => {{
+        if (!dragging) return; dragging = false;
+        if (driveTimer) clearInterval(driveTimer);
+        centerKnob(); boardFetch("drive?stop=1", 3000).catch(() => {{}});
+      }});
+    }}
+    const btnScan = document.getElementById("btnScan360");
+    if (btnScan) btnScan.onclick = async () => {{
+      btnScan.disabled = true;
+      document.getElementById("mapStatus").textContent = "Скан… ~30–60 с";
+      try {{
+        const j = await boardFetch("scan360?steps=30", 130000);
+        if (!j.ok) throw new Error(j.error || "scan");
+        (j.points || []).forEach(p => {{ if (p.valid) mapRay(p.ang, p.mm, true); }});
+        drawMapGrid();
+        document.getElementById("mapStatus").textContent = "Скан: " + (j.points||[]).length + " лучей";
+      }} catch (e) {{
+        document.getElementById("mapStatus").textContent = "Ошибка: " + e;
+      }} finally {{ btnScan.disabled = false; }}
+    }};
+    const btnMapClr = document.getElementById("btnMapClear");
+    if (btnMapClr) btnMapClr.onclick = () => {{ mapLog.fill(0); drawMapGrid(); }};
+    drawMapGrid();
+    document.getElementById("btnRobotStop")?.addEventListener("click", () => boardFetch("drive?stop=1", 3000));
+    document.getElementById("btnBeep")?.addEventListener("click", () => boardFetch("beep?hz=880&ms=250&ch=A", 5000));
+    document.getElementById("btnMel1")?.addEventListener("click", () => boardFetch("melody?id=1&ch=A", 5000));
+    document.getElementById("btnSayPrivet")?.addEventListener("click", () => boardFetch("melody?id=9&ch=A", 15000));
+    document.getElementById("btnMelStop")?.addEventListener("click", () => boardFetch("melody?id=0", 3000));
+
     function render(obj) {{
+      updateRobotTof(obj);
       if (coreOnly) {{
         renderCore(obj);
       }} else {{
@@ -1282,13 +1445,31 @@ def _run_http_mode(
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(body)
-                elif path == "/board/control" or path.startswith("/board/control"):
+                elif path.startswith("/board/"):
                     import urllib.request
 
                     qs = ""
                     if "?" in self.path:
                         qs = self.path.split("?", 1)[1]
                         qs = qs.split("&r=", 1)[0].split("&_=", 1)[0]
+                    sub = path[7:]
+                    if sub.startswith("control"):
+                        board_path = "control"
+                        if qs:
+                            board_path += "?" + qs
+                    elif sub.startswith("drive"):
+                        board_path = "drive" + ("?" + qs if qs else "")
+                    elif sub.startswith("scan360"):
+                        board_path = "scan360" + ("?" + qs if qs else "")
+                    elif sub.startswith("beep"):
+                        board_path = "beep" + ("?" + qs if qs else "")
+                    elif sub.startswith("melody"):
+                        board_path = "melody" + ("?" + qs if qs else "")
+                    elif sub.startswith("status"):
+                        board_path = "status"
+                    else:
+                        self.send_error(404)
+                        return
                     board_ip = _board_ip_for_control(port, baud)
                     if not board_ip:
                         err = json.dumps(
@@ -1304,10 +1485,11 @@ def _run_http_mode(
                         self.end_headers()
                         self.wfile.write(err)
                         return
-                    url = "http://%s/control?%s" % (board_ip, qs)
+                    url = "http://%s/%s" % (board_ip, board_path)
+                    timeout = 130.0 if board_path.startswith("scan360") else 8.0
                     try:
                         req = urllib.request.Request(url, headers={"Connection": "close", "Accept": "application/json"})
-                        with urllib.request.urlopen(req, timeout=4.0) as resp:
+                        with urllib.request.urlopen(req, timeout=timeout) as resp:
                             body = resp.read()
                         ct = resp.headers.get("Content-Type") or "application/json; charset=utf-8"
                     except Exception as e:

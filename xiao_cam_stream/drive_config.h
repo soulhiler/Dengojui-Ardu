@@ -4,6 +4,10 @@
  * Камера Sense: GPIO 10–18, 38–48; мик 41–42; LED 21 — не использовать.
  *
  * TB6612: STBY → 3.3 V (или DRIVE_STBY_PIN). VM — питание моторов, VCC — 3.3 V, общая GND.
+ *
+ * VL53L0X: отдельная шина I2C — не камера SCCB (39/40).
+ * НЕ использовать GPIO19/20 — это USB D−/D+ (после Wire.begin(20) пропадает COM, Wi‑Fi жив).
+ * По умолчанию SDA=GPIO8 (D9), SCL=GPIO9 (D10). Провод SDA с «левого» пина — на D9, не на 20.
  */
 
 #define XIAO_DRIVE_ENABLE 1
@@ -23,10 +27,11 @@
 #define DRIVE_L_DIR 1
 #define DRIVE_R_DIR 3
 
-#define DRIVE_ENC_L_A 43  /* D6 */
-#define DRIVE_ENC_L_B 44  /* D7 */
-#define DRIVE_ENC_R_A 7   /* D8 */
-#define DRIVE_ENC_R_B 8   /* D9 */
+/** Энкодеры не установлены — все 0 (не вешать pull-up на пустые пины). */
+#define DRIVE_ENC_L_A 0
+#define DRIVE_ENC_L_B 0
+#define DRIVE_ENC_R_A 0
+#define DRIVE_ENC_R_B 0
 
 #define DRIVE_US_TRIG 0
 #define DRIVE_US_ECHO 0
@@ -38,3 +43,12 @@
 #define DRIVE_PWM_FREQ_HZ 20000
 #define DRIVE_PWM_BITS 8
 #define DRIVE_WATCHDOG_MS 450
+
+/** VL53L0X на шасси (как на UNO). 0 — отключить ToF/радар/scan360 в прошивке. */
+#define XIAO_TOF_ENABLE 1
+#define XIAO_TOF_SDA 8
+#define XIAO_TOF_SCL 9
+
+/** Звук через обмотки TB6612 (как uno_motor_test). */
+#define XIAO_AUDIO_ENABLE 1
+

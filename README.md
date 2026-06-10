@@ -15,6 +15,9 @@
 | `xiao_cam_viewer.html` | Подсказка по просмотру потока |
 | `android/XiaoRobot/` | Android: камера (`/stream`), мик (TCP `:81`), джойстик → `/drive` |
 | `docs/cursor-chat-archives/` | Архив переписок Cursor (`.jsonl` + `.zip`) |
+| `docs/hardware/wiring-xiao-motor-tof.md` | **Схема:** XIAO + TB6612 + VL53L0X (пины, питание, GND) |
+| `docs/incident-wifi-pc-router-2026-06-05.md` | Отчёт: сбой Wi‑Fi ПК / роутер Duangdeehouse2 / отладка XIAO (июнь 2026) |
+| `tools/fix_pc_wifi_dihouse.ps1` | Восстановление профилей Duangdeehouse2 на ПК (запуск от администратора) |
 | `tools/xiao_cam_proxy.py` | Прокси с платы на `localhost` (Cursor/браузер) |
 | `tools/xiao_serial_telemetry.py` | Телеметрия: Serial / HTTP / BLE |
 | `tools/xiao_flash_and_telemetry.ps1` | Прошивка по USB + авто‑порт USB‑JTAG + повторы upload |
