@@ -7,4 +7,6 @@
     <string name="motor_stop">Стоп моторы</string>
     <string name="mic_on">Звук вкл</string>
     <string name="mic_off">Звук выкл</string>
+    <string name="app_update">Обновить</string>
+    <string name="update_host_title">Адрес ПК с дашбордом (ip:порт)</string>
 </resources>

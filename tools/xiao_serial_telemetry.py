@@ -1392,6 +1392,9 @@ def _run_http_mode(
 
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        # Сокет-таймаут на соединение: зависший клиент (закрытая вкладка,
+        # оборванный Wi-Fi телефона) не блокирует поток обработчика навечно.
+        timeout = 30
 
         def log_message(self, fmt, *args):
             line = fmt % args
@@ -1455,6 +1458,49 @@ def _run_http_mode(
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(body)
+                elif path in ("/app/version.json", "/app/apk"):
+                    # Самообновление Android-приложения по LAN: версия из
+                    # dist/app-version.txt (то же число читает gradle при сборке),
+                    # APK — самый свежий *.apk в dist/.
+                    import glob as _glob
+
+                    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    dist_dir = os.path.join(repo_root, "dist")
+                    apks = sorted(
+                        _glob.glob(os.path.join(dist_dir, "*.apk")),
+                        key=os.path.getmtime,
+                        reverse=True,
+                    )
+                    if path == "/app/version.json":
+                        try:
+                            with open(os.path.join(dist_dir, "app-version.txt"), "r", encoding="utf-8") as vf:
+                                ver = int(vf.read().strip())
+                        except Exception:
+                            ver = 0
+                        body = json.dumps(
+                            {"versionCode": ver, "apk": "/app/apk", "apk_present": 1 if apks else 0}
+                        ).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        if not apks:
+                            self.send_error(404, "no apk in dist/ (download CI artifact there)")
+                            return
+                        with open(apks[0], "rb") as af:
+                            data = af.read()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/vnd.android.package-archive")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.send_header("Content-Disposition", 'attachment; filename="xiao-robot.apk"')
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(data)
                 elif path.startswith("/board/"):
                     import urllib.request
                     from urllib.parse import parse_qsl, urlencode
@@ -1565,9 +1611,13 @@ def _run_http_mode(
                 except Exception:
                     pass
 
-    # Один поток обработки HTTP: на Windows ThreadingMixIn + частый опрос вкладки давали «зависание»
-    # (TIME_WAIT, исчерпание потоков/очереди). Для одного локального UI этого достаточно.
-    class Srv(socketserver.TCPServer):
+    # Многопоточный HTTP: один зависший хендлер (мёртвая плата у /board/*,
+    # долгая раздача APK, залипший long-poll вкладки) не должен блокировать
+    # остальные запросы. Прошлую проблему «ThreadingMixIn + частый опрос =
+    # зависание» лечит timeout=30 на соединении (см. класс H) + daemon-потоки:
+    # застрявшие клиенты отваливаются сами и не копятся.
+    class Srv(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        daemon_threads = True
         allow_reuse_address = False
         request_queue_size = 512
 

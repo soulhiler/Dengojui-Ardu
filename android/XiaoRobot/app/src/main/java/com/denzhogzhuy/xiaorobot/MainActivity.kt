@@ -14,6 +14,7 @@ class MainActivity : AppCompatActivity() {
     private val mjpeg = MjpegStream(lifecycleScope, ::showFrame, ::setStatusPart)
     private val mic = MicPlayer(lifecycleScope, ::setStatusPart)
     private val drive = DriveClient(lifecycleScope)
+    private val updater = AppUpdater(this, ::setStatusPart)
     private val telemetry = TelemetryPoller(lifecycleScope) { ch, rssi, ssid ->
         wifiInfo = "Wi‑Fi ch$ch · ${rssi} dBm · $ssid"
         updateStatusLine()
@@ -40,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.btnStop.setOnClickListener { sendStop() }
         binding.btnMic.setOnClickListener { toggleMic() }
+        binding.btnUpdate.setOnClickListener { askUpdateHost() }
 
         binding.joystick.onMove = { nx, ny ->
             val l = tankMix(nx, ny, left = true)
@@ -107,6 +109,25 @@ class MainActivity : AppCompatActivity() {
             mic.stop()
             binding.btnMic.text = getString(R.string.mic_on)
         }
+    }
+
+    /** Обновление приложения с ПК (дашборд раздаёт APK по LAN). */
+    private fun askUpdateHost() {
+        val input = android.widget.EditText(this).apply {
+            setText(prefs.getString("upd_host", "192.168.9.18:8897"))
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(getString(R.string.update_host_title))
+            .setView(input)
+            .setPositiveButton(getString(R.string.app_update)) { _, _ ->
+                val h = input.text.toString().trim()
+                if (h.isNotEmpty()) {
+                    prefs.edit().putString("upd_host", h).apply()
+                    updater.checkAndInstall(h, lifecycleScope)
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun sendStop() {
