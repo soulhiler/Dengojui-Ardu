@@ -7,7 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.CoroutineScope
 import java.io.BufferedInputStream
 import java.net.HttpURLConnection
 import java.net.URL
