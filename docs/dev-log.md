@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-06-11 — Приложение v3: mDNS-автопоиск платы + фикс edge-to-edge
+
+**Симптом на телефоне:** `видео: Failed to connect to /192.168.9.17:80` —
+дефолтный IP `.17` прилип в prefs, а плата по DHCP на другом адресе.
+Плюс поля/кнопки наезжали на статусбар и системную навигацию.
+
+- **mDNS-автопоиск** (порт 6107f1d из `dev`): `BoardDiscovery` (NSD,
+  `_http._tcp` → имя с «xiao» → IPv4). Поле пустое / `xiao-cam.local` /
+  `auto` → поиск 6 с, фолбэк на последний удачный IP (`last_ip`);
+  литеральный IP — прямое подключение. Прилипший `.17` сбрасывается на авто.
+  Manifest: +ACCESS_WIFI_STATE, +CHANGE_WIFI_MULTICAST_STATE.
+- **Наложения UI**: targetSdk 35 → Android 15 принудительно рисует
+  edge-to-edge; добавлен `setOnApplyWindowInsetsListener` на корневой
+  layout — отступы = 12 dp + системные бары.
+- versionCode **3** (`dist/app-version.txt`); APK собирает CI
+  (release `apk-latest`).
+
+---
+
 ## 2026-06-11 — Новая XIAO с камерой + VL53L7CX (мультизонный ToF)
 
 Приехало новое железо: XIAO ESP32-S3 **Sense с камерой** и сенсор
