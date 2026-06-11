@@ -1149,6 +1149,10 @@ static void handleBeep() {
   const uint16_t hz = server.hasArg("hz") ? static_cast<uint16_t>(server.arg("hz").toInt()) : 880;
   const uint16_t ms = server.hasArg("ms") ? static_cast<uint16_t>(server.arg("ms").toInt()) : 250;
   const String ch = server.hasArg("ch") ? server.arg("ch") : F("A");
+  if (server.hasArg("gain")) {
+    /* Скважность «голоса» 10..100 % (по умолчанию 10, как на UNO-стенде). */
+    xiaoAudioSetGain(static_cast<uint8_t>(server.arg("gain").toInt()));
+  }
   xiaoAudioBeepHttp(hz, ms, ch.c_str());
   server.send(200, F("application/json; charset=utf-8"), F("{\"ok\":1}"));
 }
@@ -1156,6 +1160,9 @@ static void handleBeep() {
 static void handleMelody() {
   const uint8_t id = server.hasArg("id") ? static_cast<uint8_t>(server.arg("id").toInt()) : 0;
   const String ch = server.hasArg("ch") ? server.arg("ch") : F("A");
+  if (server.hasArg("gain")) {
+    xiaoAudioSetGain(static_cast<uint8_t>(server.arg("gain").toInt()));
+  }
   xiaoAudioMelodyHttp(id, ch.c_str());
   server.send(200, F("application/json; charset=utf-8"), F("{\"ok\":1}"));
 }

@@ -772,6 +772,12 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
             <div id="knob" style="width:44px;height:44px;border-radius:50%;background:#5cadff;position:absolute;left:62px;top:62px;box-shadow:0 0 12px rgba(92,173,255,0.5)"></div>
           </div>
           <div id="joyVal" style="text-align:center;font-size:0.75rem;color:#8b9cb3;margin-top:6px">L 0 &middot; R 0</div>
+          <div style="margin-top:10px;width:168px">
+            <div style="font-size:0.72rem;color:#8b9cb3">Мощность: <span id="maxSpdVal">180</span>/255</div>
+            <input type="range" id="maxSpd" min="40" max="255" value="180" style="width:100%">
+            <div style="font-size:0.72rem;color:#8b9cb3;margin-top:4px">Пение (скважность): <span id="audGainVal">10</span>%</div>
+            <input type="range" id="audGain" min="10" max="100" value="10" style="width:100%">
+          </div>
         </div>
         <div>
           <canvas id="mapGrid" width="320" height="320" style="image-rendering:pixelated;background:#0d1117;border-radius:8px;border:1px solid #30363d"></canvas>
@@ -1038,6 +1044,19 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
     }}
     const joy = document.getElementById("joy"), knob = document.getElementById("knob");
     const joyVal = document.getElementById("joyVal");
+    // Регуляторы (как на UNO-стенде): мощность моторов и скважность «пения».
+    const maxSpdEl = document.getElementById("maxSpd"), maxSpdValEl = document.getElementById("maxSpdVal");
+    const audGainEl = document.getElementById("audGain"), audGainValEl = document.getElementById("audGainVal");
+    function sliderInit(el, lbl, key, defv) {{
+      if (!el) return;
+      el.value = localStorage.getItem(key) || defv;
+      if (lbl) lbl.textContent = el.value;
+      el.addEventListener("input", () => {{ if (lbl) lbl.textContent = el.value; localStorage.setItem(key, el.value); }});
+    }}
+    sliderInit(maxSpdEl, maxSpdValEl, "joy_max_spd", "180");
+    sliderInit(audGainEl, audGainValEl, "audio_gain", "10");
+    function maxSpdV() {{ return maxSpdEl ? (parseInt(maxSpdEl.value, 10) || 180) : 180; }}
+    function gainV() {{ return audGainEl ? (parseInt(audGainEl.value, 10) || 10) : 10; }}
     let dragging = false, joyL = 0, joyR = 0, driveTimer = null;
     function joyValShow() {{ if (joyVal) joyVal.textContent = "L " + joyL + " · R " + joyR; }}
     function centerKnob() {{ if (!knob) return; knob.style.left = "62px"; knob.style.top = "62px"; joyL = 0; joyR = 0; joyValShow(); }}
@@ -1054,8 +1073,9 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
         let dx = e.clientX - cx, dy = e.clientY - cy;
         const d = Math.hypot(dx, dy); if (d > R) {{ dx *= R/d; dy *= R/d; }}
         knob.style.left = (62 + dx) + "px"; knob.style.top = (62 + dy) + "px";
-        const y = -dy / R, x = dx / R; joyL = Math.round(255 * Math.max(-1, Math.min(1, y + x)));
-        joyR = Math.round(255 * Math.max(-1, Math.min(1, y - x)));
+        const y = -dy / R, x = dx / R, sp = maxSpdV();
+        joyL = Math.round(sp * Math.max(-1, Math.min(1, y + x)));
+        joyR = Math.round(sp * Math.max(-1, Math.min(1, y - x)));
         joyValShow();
       }});
       window.addEventListener("pointerup", () => {{
@@ -1082,9 +1102,9 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
     if (btnMapClr) btnMapClr.onclick = () => {{ mapLog.fill(0); drawMapGrid(); }};
     drawMapGrid();
     document.getElementById("btnRobotStop")?.addEventListener("click", () => boardFetch("drive?stop=1", 3000));
-    document.getElementById("btnBeep")?.addEventListener("click", () => boardFetch("beep?hz=880&ms=250&ch=A", 5000));
-    document.getElementById("btnMel1")?.addEventListener("click", () => boardFetch("melody?id=1&ch=A", 5000));
-    document.getElementById("btnSayPrivet")?.addEventListener("click", () => boardFetch("melody?id=9&ch=A", 15000));
+    document.getElementById("btnBeep")?.addEventListener("click", () => boardFetch("beep?hz=880&ms=250&ch=A&gain=" + gainV(), 5000));
+    document.getElementById("btnMel1")?.addEventListener("click", () => boardFetch("melody?id=1&ch=A&gain=" + gainV(), 5000));
+    document.getElementById("btnSayPrivet")?.addEventListener("click", () => boardFetch("melody?id=9&ch=A&gain=" + gainV(), 15000));
     document.getElementById("btnMelStop")?.addEventListener("click", () => boardFetch("melody?id=0", 3000));
 
     function render(obj) {{
