@@ -1228,7 +1228,11 @@ static void wifiMaintainSta() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTxTimeoutMs(0);
+  /* 0 мс отбрасывал хвост длинных строк телеметрии (~2 КБ > 256 Б буфера
+     USB-CDC): хост получал рваный JSON, дашборд не парсил ни строки.
+     20 мс — запись ждёт слива буфера; без подключённого хоста (DTR low)
+     HWCDC отбрасывает сразу, loop не тормозится. */
+  Serial.setTxTimeoutMs(20);
   delay(800);
   statusLedInit();
   statusLedBootHello();
