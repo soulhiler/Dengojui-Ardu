@@ -763,8 +763,15 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           <div id="radarDist" style="text-align:center;font-size:0.85rem;color:#8b9cb3;margin-top:6px">—</div>
           <div style="font-size:0.75rem;color:#8b9cb3;margin-top:4px">Профиль: <span id="tofProfile">—</span> · замеров: <span id="tofCount">0</span></div>
         </div>
-        <div id="joy" style="width:140px;height:140px;border-radius:50%;background:#1c2738;border:2px solid #30363d;position:relative;touch-action:none">
-          <div id="knob" style="width:44px;height:44px;border-radius:50%;background:#5cadff;position:absolute;left:48px;top:48px;box-shadow:0 0 12px rgba(92,173,255,0.5)"></div>
+        <div>
+          <div id="joy" style="width:168px;height:168px;border-radius:50%;background:#1c2738;border:2px solid #30363d;position:relative;touch-action:none">
+            <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);color:#8b9cb3;font-size:14px;line-height:1;pointer-events:none;user-select:none">&#9650;</div>
+            <div style="position:absolute;left:50%;bottom:6px;transform:translateX(-50%);color:#8b9cb3;font-size:14px;line-height:1;pointer-events:none;user-select:none">&#9660;</div>
+            <div style="position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#8b9cb3;font-size:14px;line-height:1;pointer-events:none;user-select:none">&#9664;</div>
+            <div style="position:absolute;right:8px;top:50%;transform:translateY(-50%);color:#8b9cb3;font-size:14px;line-height:1;pointer-events:none;user-select:none">&#9654;</div>
+            <div id="knob" style="width:44px;height:44px;border-radius:50%;background:#5cadff;position:absolute;left:62px;top:62px;box-shadow:0 0 12px rgba(92,173,255,0.5)"></div>
+          </div>
+          <div id="joyVal" style="text-align:center;font-size:0.75rem;color:#8b9cb3;margin-top:6px">L 0 &middot; R 0</div>
         </div>
         <div>
           <canvas id="mapGrid" width="320" height="320" style="image-rendering:pixelated;background:#0d1117;border-radius:8px;border:1px solid #30363d"></canvas>
@@ -1020,7 +1027,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       const ac = new AbortController();
       const to = setTimeout(() => ac.abort(), timeoutMs || 8000);
       try {{
-        const r = await fetch("/board/" + path + "&r=" + Date.now(), {{ cache: "no-store", signal: ac.signal }});
+        const r = await fetch("/board/" + path + "&_ts=" + Date.now(), {{ cache: "no-store", signal: ac.signal }});
         const t = await r.text();
         if (!r.ok) throw new Error("HTTP " + r.status + " " + t.slice(0, 120));
         return JSON.parse(t);
@@ -1030,10 +1037,12 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       await boardFetch("drive?l=" + l + "&r=" + r + "&q=1", 3000);
     }}
     const joy = document.getElementById("joy"), knob = document.getElementById("knob");
+    const joyVal = document.getElementById("joyVal");
     let dragging = false, joyL = 0, joyR = 0, driveTimer = null;
-    function centerKnob() {{ if (!knob) return; knob.style.left = "48px"; knob.style.top = "48px"; joyL = 0; joyR = 0; }}
+    function joyValShow() {{ if (joyVal) joyVal.textContent = "L " + joyL + " · R " + joyR; }}
+    function centerKnob() {{ if (!knob) return; knob.style.left = "62px"; knob.style.top = "62px"; joyL = 0; joyR = 0; joyValShow(); }}
     if (joy && knob) {{
-      const R = 48;
+      const R = 62;
       joy.addEventListener("pointerdown", (e) => {{
         dragging = true; e.preventDefault();
         if (driveTimer) clearInterval(driveTimer);
@@ -1044,9 +1053,10 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
         const rect = joy.getBoundingClientRect(), cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
         let dx = e.clientX - cx, dy = e.clientY - cy;
         const d = Math.hypot(dx, dy); if (d > R) {{ dx *= R/d; dy *= R/d; }}
-        knob.style.left = (48 + dx) + "px"; knob.style.top = (48 + dy) + "px";
+        knob.style.left = (62 + dx) + "px"; knob.style.top = (62 + dy) + "px";
         const y = -dy / R, x = dx / R; joyL = Math.round(255 * Math.max(-1, Math.min(1, y + x)));
         joyR = Math.round(255 * Math.max(-1, Math.min(1, y - x)));
+        joyValShow();
       }});
       window.addEventListener("pointerup", () => {{
         if (!dragging) return; dragging = false;
@@ -1172,7 +1182,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           const rto = setTimeout(function () {{ rac.abort(); }}, 12000);
           let r;
           try {{
-            r = await fetch("/board/control?" + encodeURIComponent(key) + "=" + next + "&r=" + Date.now(), {{
+            r = await fetch("/board/control?" + encodeURIComponent(key) + "=" + next + "&_ts=" + Date.now(), {{
               cache: "no-store",
               signal: rac.signal
             }});
@@ -1447,11 +1457,17 @@ def _run_http_mode(
                     self.wfile.write(body)
                 elif path.startswith("/board/"):
                     import urllib.request
+                    from urllib.parse import parse_qsl, urlencode
 
+                    # Кэш-бастер вырезаем ПО ИМЕНИ ключа (_ts/_), а не срезом строки:
+                    # старый split("&r=") отрезал параметр правого колеса r=... у /drive,
+                    # и повороты не работали (оба колеса получали команду левого).
                     qs = ""
                     if "?" in self.path:
-                        qs = self.path.split("?", 1)[1]
-                        qs = qs.split("&r=", 1)[0].split("&_=", 1)[0]
+                        raw_qs = self.path.split("?", 1)[1]
+                        pairs = [(k, v) for (k, v) in parse_qsl(raw_qs, keep_blank_values=True)
+                                 if k not in ("_", "_ts")]
+                        qs = urlencode(pairs)
                     sub = path[7:]
                     if sub.startswith("control"):
                         board_path = "control"
