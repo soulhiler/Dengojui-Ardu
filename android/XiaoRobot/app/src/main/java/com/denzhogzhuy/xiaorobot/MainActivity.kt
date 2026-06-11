@@ -50,10 +50,12 @@ class MainActivity : AppCompatActivity() {
             updateStatusLine()
         }
         binding.joystick.onRelease = {
+            // НЕ останавливаем цикл отправки (drive.stopSending убивал driveJob,
+            // и после первого касания джойстик переставал работать). Обнуляем
+            // команды — живой цикл сам шлёт /drive?stop=1, пока джойстик отпущен.
             drive.cmdL = 0
             drive.cmdR = 0
             motorInfo = ""
-            if (host.isNotEmpty()) drive.stopSending(host)
             updateStatusLine()
         }
     }
@@ -108,9 +110,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendStop() {
+        // Кнопка «Стоп» обнуляет команды; цикл отправки остаётся жить
+        // (шлёт stop=1 каждые 120 мс) — джойстик продолжает работать.
         drive.cmdL = 0
         drive.cmdR = 0
-        if (host.isNotEmpty()) drive.stopSending(host)
     }
 
     private fun showFrame(bmp: Bitmap) {
