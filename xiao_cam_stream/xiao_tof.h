@@ -1,7 +1,16 @@
 #pragma once
 /**
- * VL53L0X + scan360 (порт с arduino_motor_test на XIAO ESP32-S3).
- * Требует библиотеку Pololu VL53L0X и XIAO_TOF_ENABLE в drive_config.h.
+ * VL53L7CX — мультизонный ToF (матрица 4×4/8×8, FoV 60°, до ~3.5 м) + scan360.
+ * Библиотека: «STM32duino VL53L7CX» (arduino-cli lib install "STM32duino VL53L7CX").
+ * Включение: XIAO_TOF_ENABLE в drive_config.h. LPn модуля держать HIGH:
+ * перемычка на 3.3 V или XIAO_TOF_LPN_PIN. INT не используется (поллинг).
+ *
+ * Совместимость со старым VL53L0X-контрактом: ключи телеметрии (tof_mm и др.)
+ * и /scan360 не изменились; tof_mm — минимум по центральной полосе зон
+ * (то, во что робот может въехать). Полная сетка расстояний: GET /tof.
+ *
+ * init_sensor() грузит в сенсор ~84 КБ прошивки по I2C — старт ToF занимает
+ * ~2–3 с на 400 кГц; это нормально, не таймаут.
  */
 
 #include <Arduino.h>
@@ -10,14 +19,21 @@
 #if XIAO_TOF_ENABLE
 
 #include <Wire.h>
-#include <VL53L0X.h>
+#include <vl53l7cx_class.h>
 #include "xiao_drive.h"
 
+#ifndef XIAO_TOF_LPN_PIN
+#define XIAO_TOF_LPN_PIN -1
+#endif
+#ifndef XIAO_TOF_I2C_RST_PIN
+#define XIAO_TOF_I2C_RST_PIN -1
+#endif
+
 enum XiaoTofProfile : uint8_t {
-  XIAO_TOF_BALANCED = 0,
-  XIAO_TOF_FAST = 1,
-  XIAO_TOF_ACCURATE = 2,
-  XIAO_TOF_LONG = 3,
+  XIAO_TOF_BALANCED = 0, /* 4×4, 30 Гц */
+  XIAO_TOF_FAST = 1,     /* 4×4, 60 Гц */
+  XIAO_TOF_ACCURATE = 2, /* 8×8, 15 Гц — полная сетка (scan360, /tof) */
+  XIAO_TOF_LONG = 3,     /* 4×4, 10 Гц, интеграция 80 мс — максимум дальности */
 };
 
 struct XiaoScanPoint {
@@ -37,10 +53,14 @@ static uint32_t gTofCount = 0;
 static XiaoTofProfile gTofProfile = XIAO_TOF_BALANCED;
 static uint8_t gTofFilterTap = 3;
 static bool gTofFilterReset = false;
-static VL53L0X gTof;
+static VL53L7CX gTof(&Wire, XIAO_TOF_LPN_PIN, XIAO_TOF_I2C_RST_PIN);
+/* ResultsData крупный (метаданные на все 64 зоны) — статически, не на стеке loopTask. */
+static VL53L7CX_ResultsData gTofResults;
+static uint8_t gTofZones = VL53L7CX_RESOLUTION_4X4; /* 16 или 64 */
+static int16_t gTofGrid[VL53L7CX_RESOLUTION_8X8];   /* мм по зонам, -1 = нет цели */
 
 static bool xiaoTofValidMm(uint16_t mm) {
-  return mm >= 20 && mm < 2000;
+  return mm >= 20 && mm <= 3500;
 }
 
 static const char *xiaoTofProfileTag(XiaoTofProfile p) {
@@ -91,11 +111,13 @@ static uint16_t xiaoMedian5(uint16_t *v) {
 static uint16_t xiaoTofTickIntervalMs() {
   switch (gTofProfile) {
     case XIAO_TOF_FAST:
-      return 22;
+      return 14;
     case XIAO_TOF_ACCURATE:
-      return 100;
+      return 60;
+    case XIAO_TOF_LONG:
+      return 95;
     default:
-      return 35;
+      return 30;
   }
 }
 
@@ -107,48 +129,82 @@ static void xiaoTofApplyProfile(XiaoTofProfile p, bool force = false) {
     return;
   }
 
-  gTof.stopContinuous();
+  uint8_t res = VL53L7CX_RESOLUTION_4X4;
+  uint8_t hz = 30; /* 4×4: до 60 Гц, 8×8: до 15 Гц */
+  uint8_t mode = VL53L7CX_RANGING_MODE_CONTINUOUS;
+  uint32_t integrationMs = 0; /* только для AUTONOMOUS */
   switch (p) {
     case XIAO_TOF_FAST:
-      gTof.setSignalRateLimit(0.25f);
-      gTof.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 12);
-      gTof.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 10);
-      gTof.setMeasurementTimingBudget(20000);
-      gTof.startContinuous(22);
+      hz = 60;
       gTofFilterTap = 3;
       break;
     case XIAO_TOF_ACCURATE:
-      gTof.setSignalRateLimit(0.25f);
-      gTof.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 12);
-      gTof.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 10);
-      gTof.setMeasurementTimingBudget(100000);
-      gTof.startContinuous(105);
-      gTofFilterTap = 5;
+      res = VL53L7CX_RESOLUTION_8X8;
+      hz = 15;
+      gTofFilterTap = 3;
       break;
     case XIAO_TOF_LONG:
-      gTof.setSignalRateLimit(0.1f);
-      gTof.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
-      gTof.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
-      gTof.setMeasurementTimingBudget(33000);
-      gTof.startContinuous(35);
+      hz = 10;
+      mode = VL53L7CX_RANGING_MODE_AUTONOMOUS;
+      integrationMs = 80;
       gTofFilterTap = 3;
       break;
     default:
-      gTof.setSignalRateLimit(0.25f);
-      gTof.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 12);
-      gTof.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 10);
-      gTof.setMeasurementTimingBudget(33000);
-      gTof.startContinuous(35);
       gTofFilterTap = 3;
       p = XIAO_TOF_BALANCED;
       break;
   }
+
+  gTof.vl53l7cx_stop_ranging();
+  /* Порядок по UM3038: resolution → ranging mode (+integration) → frequency → start. */
+  bool ok = gTof.vl53l7cx_set_resolution(res) == 0;
+  ok = ok && gTof.vl53l7cx_set_ranging_mode(mode) == 0;
+  if (ok && integrationMs) {
+    ok = gTof.vl53l7cx_set_integration_time_ms(integrationMs) == 0;
+  }
+  ok = ok && gTof.vl53l7cx_set_ranging_frequency_hz(hz) == 0;
+  ok = ok && gTof.vl53l7cx_start_ranging() == 0;
+  if (!ok) {
+    gTofNeedReinit = true;
+    Serial.println(F("tof: profile apply FAIL"));
+    return;
+  }
+  gTofZones = res;
   gTofProfile = p;
   gTofFilterReset = true;
   Serial.print(F("tof profile: "));
   Serial.println(xiaoTofProfileTag(p));
 }
 
+/**
+ * Разбор свежего кадра gTofResults: обновляет gTofGrid и возвращает минимум
+ * по центральной полосе зон (средние строки матрицы — высота, куда едет
+ * корпус; крайние строки часто видят пол/потолок). 0 = валидных целей нет.
+ */
+static uint16_t xiaoTofFrameCenterMin() {
+  const uint8_t zones = gTofZones;
+  const uint8_t side = (zones == VL53L7CX_RESOLUTION_8X8) ? 8 : 4;
+  const uint8_t rowFrom = side / 4;        /* 4×4: 1, 8×8: 2 */
+  const uint8_t rowTo = side - side / 4;   /* 4×4: 3, 8×8: 6 (не включая) */
+  uint16_t best = 0;
+  for (uint8_t z = 0; z < zones; ++z) {
+    const uint16_t idx = static_cast<uint16_t>(z) * VL53L7CX_NB_TARGET_PER_ZONE;
+    const uint8_t st = gTofResults.target_status[idx];
+    const int16_t d = gTofResults.distance_mm[idx];
+    const bool valid = gTofResults.nb_target_detected[z] > 0 && (st == 5 || st == 9) && d > 0 &&
+                       xiaoTofValidMm(static_cast<uint16_t>(d));
+    gTofGrid[z] = valid ? d : -1;
+    const uint8_t row = z / side;
+    if (valid && row >= rowFrom && row < rowTo) {
+      if (!best || static_cast<uint16_t>(d) < best) {
+        best = static_cast<uint16_t>(d);
+      }
+    }
+  }
+  return best;
+}
+
+/** Авто-профиль: цель потеряна → LONG; едем с целью → FAST; стоим стабильно → BALANCED. */
 static void xiaoTofAutoEvaluate(unsigned long now) {
   if (!gTofAuto || !gTofOk) {
     return;
@@ -158,8 +214,6 @@ static void xiaoTofAutoEvaluate(unsigned long now) {
   static unsigned long lastSwitch = 0;
   static uint8_t missStreak = 0;
   static uint8_t hitStreak = 0;
-  static uint16_t samp[5] = {0, 0, 0, 0, 0};
-  static uint8_t sampN = 0;
 
   if (now - lastEval < 400) {
     return;
@@ -174,39 +228,15 @@ static void xiaoTofAutoEvaluate(unsigned long now) {
       missStreak++;
     }
     hitStreak = 0;
-    sampN = 0;
   } else {
     if (hitStreak < 250) {
       hitStreak++;
     }
     missStreak = 0;
-    if (sampN < 5) {
-      samp[sampN++] = gTofMm;
-    } else {
-      for (uint8_t i = 1; i < 5; ++i) {
-        samp[i - 1] = samp[i];
-      }
-      samp[4] = gTofMm;
-    }
   }
 
   if (now - lastSwitch < 3000) {
     return;
-  }
-
-  uint16_t spread = 0;
-  if (sampN >= 3) {
-    uint16_t mn = samp[0];
-    uint16_t mx = samp[0];
-    for (uint8_t i = 1; i < sampN; ++i) {
-      if (samp[i] < mn) {
-        mn = samp[i];
-      }
-      if (samp[i] > mx) {
-        mx = samp[i];
-      }
-    }
-    spread = mx - mn;
   }
 
   const bool motors =
@@ -218,12 +248,9 @@ static void xiaoTofAutoEvaluate(unsigned long now) {
     want = XIAO_TOF_LONG;
   } else if (gTofProfile == XIAO_TOF_LONG && hitStreak >= 4) {
     want = XIAO_TOF_BALANCED;
-  } else if (gTofHasTarget && spread > 45 && gTofProfile != XIAO_TOF_ACCURATE) {
-    want = XIAO_TOF_ACCURATE;
-  } else if (gTofHasTarget && spread <= 20 && motors && gTofProfile != XIAO_TOF_FAST) {
+  } else if (gTofHasTarget && motors && gTofProfile != XIAO_TOF_FAST) {
     want = XIAO_TOF_FAST;
-  } else if (gTofHasTarget && spread <= 15 && !motors && hitStreak >= 8 &&
-             (gTofProfile == XIAO_TOF_FAST || gTofProfile == XIAO_TOF_ACCURATE)) {
+  } else if (gTofHasTarget && !motors && hitStreak >= 8 && gTofProfile == XIAO_TOF_FAST) {
     want = XIAO_TOF_BALANCED;
   }
 
@@ -241,24 +268,28 @@ static inline void xiaoTofInit() {
   Wire.setClock(400000L);
   delay(50);
   gTofOk = false;
-  for (uint8_t attempt = 0; attempt < 3 && !gTofOk; ++attempt) {
-    gTofOk = gTof.init();
+  gTof.begin();
+  /* init_sensor льёт прошивку в сенсор (~2–3 с); 2 попытки, не 3 — иначе долгий boot. */
+  for (uint8_t attempt = 0; attempt < 2 && !gTofOk; ++attempt) {
+    gTofOk = (gTof.init_sensor() == 0);
     if (!gTofOk) {
-      delay(120);
+      delay(150);
     }
   }
   if (gTofOk) {
-    gTof.setTimeout(200);
+    for (uint8_t z = 0; z < VL53L7CX_RESOLUTION_8X8; ++z) {
+      gTofGrid[z] = -1;
+    }
     gTofProfile = XIAO_TOF_BALANCED;
     xiaoTofApplyProfile(XIAO_TOF_BALANCED, true);
   }
-  Serial.println(gTofOk ? F("tof: VL53L0X OK") : F("tof: VL53L0X FAIL"));
+  Serial.println(gTofOk ? F("tof: VL53L7CX OK") : F("tof: VL53L7CX FAIL (LPn на 3.3V? SDA/SCL?)"));
 }
 
 static inline void xiaoTofTick() {
   static unsigned long last = 0;
   static unsigned long lastRetry = 0;
-  static uint8_t failStreak = 0;
+  static unsigned long lastFrame = 0;
   static uint16_t hist[5] = {0, 0, 0, 0, 0};
   static uint8_t histFill = 0;
   const unsigned long now = millis();
@@ -275,27 +306,45 @@ static inline void xiaoTofTick() {
       lastRetry = now;
       gTofNeedReinit = true;
     }
-    return;
   }
   if (gTofNeedReinit) {
     gTofNeedReinit = false;
     xiaoTofInit();
+    lastFrame = now;
+    return;
+  }
+  if (!gTofOk) {
     return;
   }
 
-  const uint16_t mm = gTof.readRangeContinuousMillimeters();
-  if (gTof.timeoutOccurred()) {
-    gTofHasTarget = false;
-    gTofMm = 0;
-    if (++failStreak >= 5) {
+  uint8_t ready = 0;
+  if (gTof.vl53l7cx_check_data_ready(&ready) != 0) {
+    /* Ошибка I2C — если кадров нет дольше 1.5 с, переинициализация. */
+    if (now - lastFrame > 1500) {
       gTofNeedReinit = true;
-      failStreak = 0;
+      gTofHasTarget = false;
+      gTofMm = 0;
     }
-    xiaoTofAutoEvaluate(now);
     return;
   }
-  failStreak = 0;
-  if (!xiaoTofValidMm(mm)) {
+  if (!ready) {
+    if (lastFrame && now - lastFrame > 1500) {
+      gTofNeedReinit = true;
+      gTofHasTarget = false;
+      gTofMm = 0;
+    }
+    return;
+  }
+  if (gTof.vl53l7cx_get_ranging_data(&gTofResults) != 0) {
+    if (now - lastFrame > 1500) {
+      gTofNeedReinit = true;
+    }
+    return;
+  }
+  lastFrame = now;
+
+  const uint16_t mm = xiaoTofFrameCenterMin();
+  if (!mm) {
     gTofHasTarget = false;
     gTofMm = 0;
     histFill = 0;
@@ -330,16 +379,31 @@ static inline void xiaoTofTick() {
   xiaoTofAutoEvaluate(now);
 }
 
+/** Блокирующее чтение одного свежего кадра (для scan360). */
 static bool xiaoTofReadSample(uint16_t &mmOut) {
   if (!gTofOk) {
     return false;
   }
-  const uint16_t mm = gTof.readRangeContinuousMillimeters();
-  if (gTof.timeoutOccurred() || !xiaoTofValidMm(mm)) {
-    return false;
+  const unsigned long t0 = millis();
+  while (millis() - t0 < 400) {
+    uint8_t ready = 0;
+    if (gTof.vl53l7cx_check_data_ready(&ready) != 0) {
+      return false;
+    }
+    if (ready) {
+      if (gTof.vl53l7cx_get_ranging_data(&gTofResults) != 0) {
+        return false;
+      }
+      const uint16_t mm = xiaoTofFrameCenterMin();
+      if (!mm) {
+        return false;
+      }
+      mmOut = mm;
+      return true;
+    }
+    delay(5);
   }
-  mmOut = mm;
-  return true;
+  return false;
 }
 
 static uint16_t xiaoTofReadAvgMm() {
@@ -351,7 +415,6 @@ static uint16_t xiaoTofReadAvgMm() {
       sum += mm;
       n++;
     }
-    delay(35);
   }
   return n ? static_cast<uint16_t>(sum / n) : 0;
 }
@@ -453,6 +516,29 @@ static inline void xiaoTofAppendTelemetry(String &j, bool &comma) {
   appendU("tof_count", gTofCount);
   appendS("tof_profile", xiaoTofProfileTag(gTofProfile));
   appendU("tof_auto", gTofAuto ? 1u : 0u);
+  appendU("tof_res", (gTofZones == VL53L7CX_RESOLUTION_8X8) ? 8u : 4u);
+}
+
+/** GET /tof: вся сетка зон (мм, -1 = нет цели), порядок — строками сверху вниз. */
+static inline void xiaoTofGridJson(String &j) {
+  const uint8_t side = (gTofZones == VL53L7CX_RESOLUTION_8X8) ? 8 : 4;
+  j = F("{\"ok\":");
+  j += gTofOk ? '1' : '0';
+  j += F(",\"res\":");
+  j += side;
+  j += F(",\"mm\":");
+  j += gTofMm;
+  j += F(",\"profile\":\"");
+  j += xiaoTofProfileTag(gTofProfile);
+  j += F("\",\"grid\":[");
+  const uint8_t zones = side * side;
+  for (uint8_t z = 0; z < zones; ++z) {
+    if (z) {
+      j += ',';
+    }
+    j += gTofGrid[z];
+  }
+  j += F("]}");
 }
 
 #else /* !XIAO_TOF_ENABLE */
@@ -487,6 +573,8 @@ static inline uint8_t xiaoTofRunScan360(uint8_t, XiaoScanPoint *, uint8_t) {
   return 0;
 }
 static inline void xiaoTofAppendTelemetry(String &, bool &) {}
+static inline void xiaoTofGridJson(String &j) {
+  j = F("{\"ok\":0,\"error\":\"tof off\"}");
+}
 
 #endif
-

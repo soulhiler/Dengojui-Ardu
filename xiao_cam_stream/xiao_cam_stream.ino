@@ -15,6 +15,7 @@
  * Телеметрия: каждые ~1.5 с в Serial и GET /telemetry — MCU, память, flash/OTA, Wi‑Fi, BLE (LE), PDM‑микрофон Sense, AP (BSS), камера, RTOS.
  * Управление: GET /control?cam=0|1&mic=0|1&ble=0|1&wifi=0|1&drive=0|1 (wifi — эко‑сон радио).
  * Привод: GET /drive?l=-255..255&r=...  или /drive?stop=1  (пины — drive_config.h).
+ * ToF VL53L7CX (мультизонный): tof_mm в /telemetry — минимум по центральной полосе; сетка зон — GET /tof.
  * Сбор на ПК (по умолчанию): Wi‑Fi GET /telemetry → USB Serial → BLE (компактный JSON в GATT). Скрипт: tools/xiao_serial_telemetry.py
  * Панель в одном окне: прокси http://127.0.0.1:8898/telemetry
  *
@@ -78,8 +79,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 15u;
-static constexpr char kXiaoFwVersion[] = "1.2.4";
+static constexpr uint32_t kXiaoFwBuild = 16u;
+static constexpr char kXiaoFwVersion[] = "1.3.0";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -277,8 +278,11 @@ static bool initCamera() {
 
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      /* JPEG: меньше число = выше качество (0–63). 2 — почти максимум; 0–1 часто нестабильны / огромный битрейт. */
-      config.jpeg_quality = 2;
+      /* Стабильный непрерывный MJPEG важнее макс. разрешения: QXGA/UXGA @ q2
+         на OV3660 переполняет буфер (cam_hal FB-OVF) → esp_camera_fb_get()=NULL,
+         кадров нет вообще. SVGA + q12 отдаётся надёжно. q: меньше = качественнее. */
+      config.frame_size = FRAMESIZE_SVGA;
+      config.jpeg_quality = 12;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
@@ -305,14 +309,9 @@ static bool initCamera() {
   }
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      if (s->id.PID == OV3660_PID) {
-        s->set_framesize(s, FRAMESIZE_QXGA);
-        s->set_quality(s, 2);
-      } else {
-        /* OV2640 и др.: UXGA — типичный максимум разрешения; выше — только с другой матрицей. */
-        s->set_framesize(s, FRAMESIZE_UXGA);
-        s->set_quality(s, 2);
-      }
+      /* Для OV3660 и OV2640 одинаково: стабильный поток важнее разрешения (FB-OVF, см. выше). */
+      s->set_framesize(s, FRAMESIZE_SVGA);
+      s->set_quality(s, 12);
     } else {
       s->set_framesize(s, FRAMESIZE_SVGA);
       s->set_quality(s, 6);
@@ -480,7 +479,7 @@ static void handleRoot() {
   }
   html += F("<p><a href=\"/stream\">/stream</a> · <a href=\"/capture\">/capture</a> · <a href=\"/telemetry\">/telemetry</a></p>");
   html += F("<p><small>Mic PCM (TCP 81, s16le 16 kHz mono) — через прокси: <code>/mic_s16</code></small></p>");
-  html += F("<p><small>Привод: <code>/drive?l=0&r=0</code> · ToF <code>/status</code> · карта <code>/scan360?steps=30</code> · звук <code>/beep</code> <code>/melody</code></small></p>");
+  html += F("<p><small>Привод: <code>/drive?l=0&r=0</code> · ToF <code>/status</code> <code>/tof</code> · карта <code>/scan360?steps=30</code> · звук <code>/beep</code> <code>/melody</code></small></p>");
   html += F("</body></html>");
   server.send(200, "text/html; charset=utf-8", html);
 }
@@ -1175,6 +1174,15 @@ static void handleTelemetry() {
   server.send(200, F("application/json; charset=utf-8"), body);
 }
 
+/** Сетка зон VL53L7CX (мм, -1 = нет цели); при XIAO_TOF_ENABLE 0 — {"ok":0}. */
+static void handleTofGrid() {
+  String j;
+  xiaoTofGridJson(j);
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(200, F("application/json; charset=utf-8"), j);
+}
+
 /** esp32-arduino 3.3: нет WiFi.disconnectReason() — берём reason из системного события. */
 static void wifiOnArduinoEvent(arduino_event_id_t event, arduino_event_info_t info) {
   if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
@@ -1322,6 +1330,7 @@ void setup() {
   server.on("/capture", HTTP_GET, handleCapture);
   server.on("/telemetry", HTTP_GET, handleTelemetry);
   server.on("/control", HTTP_GET, handleControl);
+  server.on("/tof", HTTP_GET, handleTofGrid);
 #if XIAO_DRIVE_ENABLE
   server.on("/drive", HTTP_GET, handleDrive);
   server.on("/status", HTTP_GET, handleRobotStatus);
@@ -1347,7 +1356,7 @@ void setup() {
   }
 #endif
   statusLedSet(StatusLed::Running);
-  Serial.println(F("HTTP: /telemetry /drive /status /scan360 /beep /melody"));
+  Serial.println(F("HTTP: /telemetry /drive /status /tof /scan360 /beep /melody"));
   Serial.println(F("Telemetry: JSON lines in Serial every 1.5s; snapshot GET /telemetry"));
 }
 

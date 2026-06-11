@@ -29,8 +29,8 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32
       - name: Install Arduino libraries
-        # VL53L0X (Pololu) — ToF-датчик, нужен для xiao_tof.h (прошивка 1.2.x)
-        run: arduino-cli lib install "VL53L0X"
+        # VL53L7CX (ST) — мультизонный ToF, нужен для xiao_tof.h (прошивка 1.3.x)
+        run: arduino-cli lib install "STM32duino VL53L7CX"
       - name: Provide placeholder secrets.h
         run: cp xiao_cam_stream/secrets.h.example xiao_cam_stream/secrets.h
       - name: Compile xiao_cam_stream
