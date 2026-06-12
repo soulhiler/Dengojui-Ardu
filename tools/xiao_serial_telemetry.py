@@ -1665,7 +1665,13 @@ def _run_http_mode(
     if start_ble:
         print("BLE: имя~%r GATT %s" % (ble_name, ble_char_uuid), file=sys.stderr)
     print("Ctrl+C — остановить сервер.", file=sys.stderr)
-    with Srv(("127.0.0.1", http_port), H) as httpd:
+    _lan_ip = _local_lan_ip()
+    if _lan_ip:
+        print("LAN (телефон, «Обновить»): http://%s:%d/app/version.json" % (_lan_ip, http_port), file=sys.stderr)
+    _try_register_mdns(http_port, _lan_ip)
+    # 0.0.0.0: телефон качает APK (/app/apk) и видит панель по LAN — на
+    # 127.0.0.1 «Обновить» с телефона физически не работало.
+    with Srv(("0.0.0.0", http_port), H) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
@@ -1743,6 +1749,44 @@ def _run_console_mode(port: str, baud: int, log_path: Path | None, pretty: bool)
             log_f.close()
 
     return 0
+
+
+def _local_lan_ip() -> str:
+    """IP этого ПК в LAN (без трафика: UDP connect не шлёт пакетов)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return ""
+
+
+def _try_register_mdns(http_port: int, lan_ip: str) -> None:
+    """mDNS-анонс «xiao-dash»: телефон находит ПК сам (кнопка «Обновить»).
+
+    Необязательная зависимость: pip install zeroconf. Без неё — просто подсказка.
+    """
+    if not lan_ip:
+        return
+    try:
+        from zeroconf import ServiceInfo, Zeroconf  # type: ignore[import-not-found]
+
+        info = ServiceInfo(
+            "_http._tcp.local.",
+            "xiao-dash._http._tcp.local.",
+            addresses=[socket.inet_aton(lan_ip)],
+            port=http_port,
+            properties={"path": "/app/version.json"},
+        )
+        Zeroconf().register_service(info)
+        print("mDNS: xiao-dash → %s:%d (автопоиск ПК с телефона)" % (lan_ip, http_port), file=sys.stderr)
+    except ImportError:
+        print("mDNS: выкл — для автопоиска ПК с телефона: pip install zeroconf", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 - анонс не должен ронять дашборд
+        print("mDNS: ошибка анонса (%s)" % e, file=sys.stderr)
 
 
 def main() -> int:

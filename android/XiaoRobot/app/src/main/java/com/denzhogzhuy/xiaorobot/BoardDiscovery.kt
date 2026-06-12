@@ -28,24 +28,32 @@ class BoardDiscovery(
     private val done = AtomicBoolean(false)
     private val resolving = AtomicBoolean(false)
 
-    /** Ищет плату до timeoutMs; onFound(ip) или onFail() — всегда на main-потоке, один раз. */
-    fun find(timeoutMs: Long, onFound: (String) -> Unit, onFail: () -> Unit) {
+    /**
+     * Ищет сервис до timeoutMs; onFound(ip, port) или onFail() — всегда на main-потоке, один раз.
+     * nameFilter: "xiao-cam" — плата, "xiao-dash" — дашборд на ПК (раздаёт APK на :8897).
+     */
+    fun find(
+        timeoutMs: Long,
+        onFound: (String, Int) -> Unit,
+        onFail: () -> Unit,
+        nameFilter: String = "xiao-cam",
+    ) {
         done.set(false)
         resolving.set(false)
         acquireLock()
 
-        fun finish(ok: Boolean, ip: String?) {
+        fun finish(ok: Boolean, ip: String?, port: Int) {
             if (done.compareAndSet(false, true)) {
                 stop()
-                main.post { if (ok && ip != null) onFound(ip) else onFail() }
+                main.post { if (ok && ip != null) onFound(ip, port) else onFail() }
             }
         }
-        main.postDelayed({ finish(false, null) }, timeoutMs)
+        main.postDelayed({ finish(false, null, 0) }, timeoutMs)
 
         val dl = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {}
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                finish(false, null)
+                finish(false, null, 0)
             }
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
             override fun onDiscoveryStopped(serviceType: String) {}
@@ -53,7 +61,7 @@ class BoardDiscovery(
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 if (done.get()) return
                 val name = serviceInfo.serviceName ?: ""
-                if (!name.lowercase().contains("xiao")) return
+                if (!name.lowercase().contains(nameFilter)) return
                 // Один resolve за раз (ограничение NsdManager до API 34).
                 if (!resolving.compareAndSet(false, true)) return
                 nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
@@ -62,7 +70,7 @@ class BoardDiscovery(
                     }
                     override fun onServiceResolved(si: NsdServiceInfo) {
                         val ip = si.host?.hostAddress
-                        if (ip != null) finish(true, ip) else resolving.set(false)
+                        if (ip != null) finish(true, ip, si.port) else resolving.set(false)
                     }
                 })
             }
@@ -72,7 +80,7 @@ class BoardDiscovery(
             nsd.discoverServices("_http._tcp.", NsdManager.PROTOCOL_DNS_SD, dl)
         } catch (e: Exception) {
             onStatus("mDNS: ошибка (${e.message})")
-            finish(false, null)
+            finish(false, null, 0)
         }
     }
 

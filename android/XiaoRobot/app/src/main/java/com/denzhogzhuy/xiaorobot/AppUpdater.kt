@@ -24,16 +24,17 @@ class AppUpdater(
     private val activity: AppCompatActivity,
     private val onStatus: (String) -> Unit,
 ) {
-    fun checkAndInstall(host: String, scope: CoroutineScope) {
+    /** quiet: авто-проверка после подключения — шумим только если реально есть обновление. */
+    fun checkAndInstall(host: String, scope: CoroutineScope, quiet: Boolean = false) {
         scope.launch(Dispatchers.IO) {
             try {
-                onStatus("обновление: проверяю $host…")
+                if (!quiet) onStatus("обновление: проверяю $host…")
                 val meta = JSONObject(httpGetText("http://$host/app/version.json"))
                 val remote = meta.optLong("versionCode", 0L)
                 val info = activity.packageManager.getPackageInfo(activity.packageName, 0)
                 val cur = PackageInfoCompat.getLongVersionCode(info)
                 if (remote <= cur) {
-                    onStatus("обновление: установлена последняя версия (v$cur)")
+                    if (!quiet) onStatus("обновление: установлена последняя версия (v$cur)")
                     return@launch
                 }
                 onStatus("обновление: качаю v$remote…")
@@ -48,7 +49,7 @@ class AppUpdater(
                 }
                 activity.startActivity(intent)
             } catch (e: Exception) {
-                onStatus("обновление: ошибка — ${e.message}")
+                if (!quiet) onStatus("обновление: ошибка — ${e.message}")
             }
         }
     }

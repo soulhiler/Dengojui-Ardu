@@ -325,7 +325,7 @@ class MainActivity : AppCompatActivity() {
             setStatusPart("поиск платы по mDNS…")
             discovery.find(
                 timeoutMs = 6000L,
-                onFound = { ip ->
+                onFound = { ip, _ ->
                     setStatusPart("плата найдена: $ip")
                     startSessions(ip)
                 },
@@ -355,6 +355,27 @@ class MainActivity : AppCompatActivity() {
         drive.startSending(h)
         telemetry.start(h)
         setStatusPart("подключено к $h")
+        autoCheckUpdate()
+    }
+
+    /**
+     * Авто-обновление: после подключения тихо ищем дашборд ПК (mDNS «xiao-dash»)
+     * и сравниваем версии. Есть новее — качаем и зовём установщик; нет ПК — молчим.
+     */
+    private fun autoCheckUpdate() {
+        binding.root.postDelayed({
+            if (!connected) return@postDelayed
+            discovery.find(
+                timeoutMs = 5000L,
+                onFound = { ip, port ->
+                    val h = "$ip:${if (port > 0) port else 8897}"
+                    prefs.edit().putString("upd_host", h).apply()
+                    updater.checkAndInstall(h, lifecycleScope, quiet = true)
+                },
+                onFail = { /* ПК не в сети — обычное дело, не шумим */ },
+                nameFilter = "xiao-dash",
+            )
+        }, 2500L)
     }
 
     private fun disconnectAll() {
@@ -401,16 +422,31 @@ class MainActivity : AppCompatActivity() {
         }
         val input = android.widget.EditText(this).apply {
             setText(preset)
-            hint = if (subnet.isNotEmpty()) "напр. ${subnet}18 (порт :8897 сам)" else "IP ПК[:8897]"
+            hint = "пусто = найти ПК автоматически"
             setSelection(text.length)
         }
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(getString(R.string.update_host_title))
-            .setMessage("ПК и телефон — в одной Wi‑Fi. На ПК запусти дашборд:\npy -3 tools\\xiao_serial_telemetry.py\nIP ПК — команда ipconfig. APK кладётся в dist\\.")
+            .setMessage("Пусто = автопоиск ПК (mDNS). На ПК запусти дашборд:\npy -3 tools\\xiao_serial_telemetry.py\nСвежий APK кладётся в dist\\. Вручную: IP ПК (порт :8897 сам).")
             .setView(input)
             .setPositiveButton(getString(R.string.app_update)) { _, _ ->
                 var h = input.text.toString().trim().removePrefix("http://").removeSuffix("/")
-                if (h.isNotEmpty()) {
+                if (h.isEmpty() || h.endsWith(".")) {
+                    // Пусто/только подсеть — ищем ПК сами (дашборд анонсирует «xiao-dash»).
+                    setStatusPart("ищу ПК с дашбордом (mDNS xiao-dash)…")
+                    discovery.find(
+                        timeoutMs = 6000L,
+                        onFound = { ip, port ->
+                            val hh = "$ip:${if (port > 0) port else 8897}"
+                            prefs.edit().putString("upd_host", hh).apply()
+                            updater.checkAndInstall(hh, lifecycleScope)
+                        },
+                        onFail = {
+                            setStatusPart("ПК не найден: запусти дашборд (нужен pip install zeroconf) или впиши IP")
+                        },
+                        nameFilter = "xiao-dash",
+                    )
+                } else {
                     if (!h.contains(':')) h += ":8897"
                     prefs.edit().putString("upd_host", h).apply()
                     updater.checkAndInstall(h, lifecycleScope)
