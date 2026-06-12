@@ -8,4 +8,37 @@
         <item name="android:navigationBarColor">#0F1419</item>
         <item name="android:windowBackground">#0F1419</item>
     </style>
+
+    <!-- Вкладка «Управление» -->
+    <style name="CtrlHeader">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">14dp</item>
+        <item name="android:textColor">#58A6FF</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="CtrlSwitch">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">6dp</item>
+        <item name="android:textColor">#C9D1D9</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <style name="CtrlLabel">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">8dp</item>
+        <item name="android:textColor">#8B949E</item>
+        <item name="android:textSize">12sp</item>
+    </style>
+
+    <style name="CtrlButton" parent="Widget.MaterialComponents.Button.OutlinedButton">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_marginEnd">8dp</item>
+    </style>
 </resources>

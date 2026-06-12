@@ -9,4 +9,20 @@
     <string name="mic_off">Звук выкл</string>
     <string name="app_update">Обновить</string>
     <string name="update_host_title">Адрес ПК с дашбордом (ip:порт)</string>
+    <string name="tab_robot">Робот</string>
+    <string name="tab_telemetry">Телеметрия</string>
+    <string name="tab_controls">Управление</string>
+    <string name="ctrl_board">Плата (/control)</string>
+    <string name="ctrl_wifi">Wi‑Fi радио (вкл — без эко‑сна)</string>
+    <string name="ctrl_ble">Bluetooth LE (реклама)</string>
+    <string name="ctrl_cam">Камера (/stream, /capture)</string>
+    <string name="ctrl_mic">Микрофон платы (TCP :81)</string>
+    <string name="ctrl_drive">Привод (моторы)</string>
+    <string name="ctrl_drive_params">Джойстик и голос</string>
+    <string name="ctrl_sound">Звук (моторами TB6612)</string>
+    <string name="ctrl_app">Приложение</string>
+    <string name="snd_beep">Beep A</string>
+    <string name="snd_melody1">Мелодия 1</string>
+    <string name="snd_hi">Привет</string>
+    <string name="snd_stop">Стоп звук</string>
 </resources>

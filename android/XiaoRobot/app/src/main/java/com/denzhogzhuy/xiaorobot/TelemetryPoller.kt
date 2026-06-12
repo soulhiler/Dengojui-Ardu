@@ -10,10 +10,11 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** Периодически читает /telemetry (канал Wi‑Fi, RSSI). */
+/** Периодически читает /telemetry: краткая строка для статуса + полный JSON для вкладки. */
 class TelemetryPoller(
     private val scope: CoroutineScope,
     private val onInfo: (wifiChannel: Int, rssi: Int, ssid: String) -> Unit,
+    private val onJson: (JSONObject) -> Unit = {},
 ) {
     private var job: Job? = null
 
@@ -35,6 +36,7 @@ class TelemetryPoller(
                         val ssid = j.optString("wifi_ssid", "")
                         scope.launch(Dispatchers.Main) {
                             onInfo(ch, rssi, ssid)
+                            onJson(j)
                         }
                     }
                     c.disconnect()

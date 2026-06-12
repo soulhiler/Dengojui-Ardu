@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/tabRobot"
+        android:icon="@android:drawable/ic_menu_camera"
+        android:title="@string/tab_robot" />
+    <item
+        android:id="@+id/tabTelemetry"
+        android:icon="@android:drawable/ic_menu_info_details"
+        android:title="@string/tab_telemetry" />
+    <item
+        android:id="@+id/tabControls"
+        android:icon="@android:drawable/ic_menu_preferences"
+        android:title="@string/tab_controls" />
+</menu>
