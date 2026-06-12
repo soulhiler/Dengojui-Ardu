@@ -73,7 +73,18 @@ class MainActivity : AppCompatActivity() {
         binding.btnMic.setOnClickListener { toggleMic() }
         binding.btnUpdate.setOnClickListener { askUpdateHost() }
 
-        binding.joystick.onMove = { nx, ny ->
+        bindJoystick(binding.joystick)
+        bindJoystick(binding.joystickOverlay)
+
+        setupTabs()
+        setupControls()
+    }
+
+    private var motorInfo = ""
+
+    /** Один обработчик на оба джойстика (главный экран и оверлей на телеметрии). */
+    private fun bindJoystick(j: JoystickView) {
+        j.onMove = { nx, ny ->
             val l = tankMix(nx, ny, left = true)
             val r = tankMix(nx, ny, left = false)
             drive.cmdL = l
@@ -81,7 +92,7 @@ class MainActivity : AppCompatActivity() {
             motorInfo = "L=$l R=$r"
             updateStatusLine()
         }
-        binding.joystick.onRelease = {
+        j.onRelease = {
             // НЕ останавливаем цикл отправки (drive.stopSending убивал driveJob,
             // и после первого касания джойстик переставал работать). Обнуляем
             // команды — живой цикл сам шлёт /drive?stop=1, пока джойстик отпущен.
@@ -90,12 +101,7 @@ class MainActivity : AppCompatActivity() {
             motorInfo = ""
             updateStatusLine()
         }
-
-        setupTabs()
-        setupControls()
     }
-
-    private var motorInfo = ""
 
     // --- Вкладки ---
 
@@ -104,6 +110,9 @@ class MainActivity : AppCompatActivity() {
             binding.pageRobot.visibility = if (item.itemId == R.id.tabRobot) android.view.View.VISIBLE else android.view.View.GONE
             binding.pageTelemetry.visibility = if (item.itemId == R.id.tabTelemetry) android.view.View.VISIBLE else android.view.View.GONE
             binding.pageControls.visibility = if (item.itemId == R.id.tabControls) android.view.View.VISIBLE else android.view.View.GONE
+            // Джойстик-оверлей на телеметрии: рулить и смотреть drive_cmd_l/r одновременно.
+            binding.joystickOverlay.visibility =
+                if (item.itemId == R.id.tabTelemetry) android.view.View.VISIBLE else android.view.View.GONE
             if (item.itemId == R.id.tabTelemetry) {
                 lastJson?.let { renderTelemetry(it) }
             }
