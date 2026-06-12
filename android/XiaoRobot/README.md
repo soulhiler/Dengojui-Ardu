@@ -20,7 +20,7 @@ cd android\XiaoRobot
 gradlew.bat assembleDebug
 ```
 
-APK: **`app\build\outputs\apk\debug\app-debug.apk`**
+APK: **`app\build\outputs\apk\debug\xiao-robot-v<N>-debug.apk`** (версия из `dist/app-version.txt`)
 
 Либо откройте папку `XiaoRobot` в Android Studio и **Build → Build Bundle(s) / APK(s) → Build APK(s)**.
 

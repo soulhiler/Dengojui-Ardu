@@ -49,6 +49,15 @@ android {
     buildFeatures {
         viewBinding = true
     }
+    // Имя APK с версией (например xiao-robot-v5-debug.apk) — чтобы в dist/ и в
+    // release apk-latest было видно, какая это сборка. Версия — dist/app-version.txt.
+    applicationVariants.all {
+        val variantName = buildType.name
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
+                "xiao-robot-v$appVersionCode-$variantName.apk"
+        }
+    }
 }
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")

@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-06-12 — Имя APK с версией
+
+`build.gradle.kts`: outputFileName = `xiao-robot-v<N>-debug.apk`
+(N из `dist/app-version.txt`) — в dist/ и в release apk-latest видно,
+какая сборка. CI-глоб `*.apk` не менялся.
+
+---
+
 ## 2026-06-12 — Приложение v5: обновлялка не зависит от прилипшего адреса ПК
 
 **Симптом:** «обновление: ошибка — failed to connect to /192.168.9.18:8897
