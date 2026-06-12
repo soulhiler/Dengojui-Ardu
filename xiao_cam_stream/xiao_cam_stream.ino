@@ -79,8 +79,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 16u;
-static constexpr char kXiaoFwVersion[] = "1.3.0";
+static constexpr uint32_t kXiaoFwBuild = 17u;
+static constexpr char kXiaoFwVersion[] = "1.3.1";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -359,6 +359,74 @@ static void micTcpTask(void * /*arg*/) {
 }
 #endif
 
+/** TCP :82 — MJPEG в отдельной задаче. Старый handleStream крутил
+ *  while(connected) ВНУТРИ единственного потока WebServer: пока телефон
+ *  смотрел видео, /drive и /telemetry не обрабатывались вовсе (и watchdog
+ *  привода не тикал). Теперь :80/stream отвечает 302 → :82, а кадры гонит
+ *  эта задача — HTTP-сервер всегда свободен. */
+static WiFiServer gStreamTcpServer{82};
+static volatile bool gStreamServing = false;
+
+static void streamTcpTask(void * /*arg*/) {
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) {
+      vTaskDelay(pdMS_TO_TICKS(150));
+      continue;
+    }
+    WiFiClient c = gStreamTcpServer.available();
+    if (!c) {
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
+    }
+    // Съесть HTTP-заголовки запроса (до пустой строки).
+    c.setTimeout(2);
+    const uint32_t t0 = millis();
+    while (c.connected() && millis() - t0 < 1500u) {
+      const String line = c.readStringUntil('\n');
+      if (line.length() <= 1) {
+        break;  // "\r" или пусто — конец заголовков
+      }
+    }
+    if (!gCamOk || !gCtrlCamEnabled) {
+      c.print(F("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n"
+                "Connection: close\r\n\r\ncamera off\n"));
+      c.stop();
+      continue;
+    }
+    c.print(F("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n"
+              "Content-Type: multipart/x-mixed-replace; boundary=mjpeg\r\n\r\n"));
+    gStreamServing = true;
+    while (c.connected() && gCamOk && gCtrlCamEnabled) {
+      camera_fb_t *fb = esp_camera_fb_get();
+      if (!fb) {
+        vTaskDelay(pdMS_TO_TICKS(3));
+        continue;
+      }
+      c.print(F("\r\n--mjpeg\r\nContent-Type: image/jpeg\r\nContent-Length: "));
+      c.print(fb->len);
+      c.print(F("\r\n\r\n"));
+      size_t remain = fb->len;
+      const uint8_t *p = fb->buf;
+      while (remain > 0 && c.connected()) {
+        const size_t chunk = remain > 4096 ? 4096 : remain;
+        const size_t w = c.write(p, chunk);
+        if (w == 0) {
+          break;
+        }
+        p += w;
+        remain -= w;
+      }
+      esp_camera_fb_return(fb);
+      if (remain == 0) {
+        g_streamFrameCount++;
+      }
+      vTaskDelay(1);  // отдать квант Wi-Fi/микрофону
+    }
+    gStreamServing = false;
+    c.stop();
+  }
+}
+
 /** PDM Sense: CLK=42, DATA=41 (Seeed Wiki). Не пересекается с пинами камеры XIAO. */
 static void telemetryMicInit() {
 #if !XIAO_TELEM_HAVE_PDM
@@ -485,57 +553,24 @@ static void handleRoot() {
 }
 
 static void handleStream() {
-  WiFiClient client = server.client();
-  if (!client || !client.connected()) {
-    return;
-  }
+  /* MJPEG отдаёт streamTcpTask на :82. Раньше кадры гнались прямо отсюда
+     в бесконечном while — единственный поток WebServer был занят стримом,
+     и /drive с телефона не обрабатывался вовсе (моторы «не работали»). */
   if (!gCamOk || !gCtrlCamEnabled) {
-    client.println(F("HTTP/1.1 503 Service Unavailable"));
-    client.println(F("Content-Type: text/plain; charset=utf-8"));
-    client.println(F("Connection: close"));
-    client.println();
-    client.println(gCamOk ? F("camera disabled (GET /control?cam=1)") : F("camera hardware not present"));
+    server.sendHeader(F("Cache-Control"), F("no-store"));
+    server.send(503, F("text/plain; charset=utf-8"),
+                gCamOk ? F("camera disabled (GET /control?cam=1)") : F("camera hardware not present"));
     return;
   }
-
-  const char *const boundary = "mjpeg";
-
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Access-Control-Allow-Origin: *"));
-  // Не ставить Connection: close — часть клиентов рвёт MJPEG после первого кадра.
-  client.print(F("Content-Type: multipart/x-mixed-replace; boundary="));
-  client.println(boundary);
-  client.println();
-
-  while (client.connected()) {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
-      delay(2);
-      continue;
-    }
-    client.print(F("\r\n--"));
-    client.print(boundary);
-    client.print(F("\r\nContent-Type: image/jpeg\r\nContent-Length: "));
-    client.print(fb->len);
-    client.print(F("\r\n\r\n"));
-
-    size_t remain = fb->len;
-    uint8_t *p = fb->buf;
-    while (remain > 0 && client.connected()) {
-      const size_t chunk = remain > 4096 ? 4096 : remain;
-      const size_t w = client.write(p, chunk);
-      if (w == 0) {
-        break;
-      }
-      p += w;
-      remain -= w;
-    }
-    esp_camera_fb_return(fb);
-    if (remain == 0) {
-      g_streamFrameCount++;
-    }
-    yield();
+  String loc = String(F("http://")) + server.hostHeader();
+  const int colon = loc.indexOf(':', 7);  // отрезать порт, если был в Host
+  if (colon > 0) {
+    loc.remove(colon);
   }
+  loc += F(":82/stream");
+  server.sendHeader(F("Location"), loc);
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.send(302, F("text/plain; charset=utf-8"), loc);
 }
 
 static void handleCapture() {
@@ -1359,6 +1394,13 @@ void setup() {
     Serial.println(F("mic: TCP :81 disabled (PDM init failed)"));
   }
 #endif
+  // MJPEG-задача на :82 (поднимаем всегда: без камеры отвечает 503).
+  gStreamTcpServer.begin(82);
+  if (xTaskCreatePinnedToCore(streamTcpTask, "mjpegTcp", 8192, nullptr, 1, nullptr, 1) != pdPASS) {
+    Serial.println(F("stream: MJPEG task start failed"));
+  } else {
+    Serial.println(F("stream: MJPEG on :82 (/stream на :80 -> 302 redirect)"));
+  }
   statusLedSet(StatusLed::Running);
   Serial.println(F("HTTP: /telemetry /drive /status /tof /scan360 /beep /melody"));
   Serial.println(F("Telemetry: JSON lines in Serial every 1.5s; snapshot GET /telemetry"));
