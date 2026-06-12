@@ -369,15 +369,28 @@ class MainActivity : AppCompatActivity() {
 
     /** Обновление приложения с ПК (дашборд раздаёт APK по LAN). */
     private fun askUpdateHost() {
+        // ПК обязан быть в той же подсети, что плата/телефон. Прилипший адрес из
+        // другой подсети (например 192.168.9.18 после переезда сети на 192.168.1.x)
+        // бесполезен — подставляем текущую подсеть платы, пользователь дописывает хвост.
+        val lastIp = prefs.getString("last_ip", "") ?: ""
+        val subnet = lastIp.substringBeforeLast('.', "").let { if (it.isEmpty()) "" else "$it." }
+        var preset = prefs.getString("upd_host", "") ?: ""
+        if (preset.isEmpty() || (subnet.isNotEmpty() && !preset.startsWith(subnet))) {
+            preset = subnet
+        }
         val input = android.widget.EditText(this).apply {
-            setText(prefs.getString("upd_host", "192.168.9.18:8897"))
+            setText(preset)
+            hint = if (subnet.isNotEmpty()) "напр. ${subnet}18 (порт :8897 сам)" else "IP ПК[:8897]"
+            setSelection(text.length)
         }
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(getString(R.string.update_host_title))
+            .setMessage("ПК и телефон — в одной Wi‑Fi. На ПК запусти дашборд:\npy -3 tools\\xiao_serial_telemetry.py\nIP ПК — команда ipconfig. APK кладётся в dist\\.")
             .setView(input)
             .setPositiveButton(getString(R.string.app_update)) { _, _ ->
-                val h = input.text.toString().trim()
+                var h = input.text.toString().trim().removePrefix("http://").removeSuffix("/")
                 if (h.isNotEmpty()) {
+                    if (!h.contains(':')) h += ":8897"
                     prefs.edit().putString("upd_host", h).apply()
                     updater.checkAndInstall(h, lifecycleScope)
                 }
