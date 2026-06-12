@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     private var connected = false
     private var wifiInfo = ""
     private var tofInfo = ""
+    private var driveInfo = ""
     private var micOn = false
     private var host: String = ""
 
@@ -228,6 +229,14 @@ class MainActivity : AppCompatActivity() {
             val mm = j.optInt("tof_mm", 0)
             if (j.optInt("tof_valid", 0) == 1 && mm > 0) "ToF $mm мм" else "ToF —"
         } else ""
+        // Почему моторы могут молчать — сразу в статус, не копаясь в телеметрии.
+        driveInfo = when {
+            j.optInt("drive_hw", 0) == 0 -> ""
+            j.optInt("drive_enabled", 1) == 0 -> "⚠ привод ВЫКЛ (вкладка Управление)"
+            j.optInt("drive_safety", 0) != 0 -> "⚠ рефлекс-стоп (бампер/УЗ)"
+            j.optInt("drive_watchdog", 0) == 1 -> "⚠ watchdog: команды не доходят"
+            else -> ""
+        }
         updateStatusLine()
         syncSwitches(j)
         if (binding.pageTelemetry.visibility == android.view.View.VISIBLE) {
@@ -236,12 +245,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun syncSwitches(j: JSONObject) {
+        // Трогаем тумблер только если ключ реально пришёл — иначе optInt-дефолт
+        // «сбрасывал» состояние (привод всегда выглядел выключенным).
         updatingSwitches = true
-        binding.swWifi.isChecked = j.optInt("ctrl_wifi", 1) == 1
-        binding.swBle.isChecked = j.optInt("ctrl_ble", 0) == 1
-        binding.swCam.isChecked = j.optInt("ctrl_cam", 0) == 1
-        binding.swMic.isChecked = j.optInt("ctrl_mic", 0) == 1
-        binding.swDrive.isChecked = j.optInt("ctrl_drive", 0) == 1
+        if (j.has("ctrl_wifi")) binding.swWifi.isChecked = j.optInt("ctrl_wifi", 1) == 1
+        if (j.has("ctrl_ble")) binding.swBle.isChecked = j.optInt("ctrl_ble", 0) == 1
+        if (j.has("ctrl_cam")) binding.swCam.isChecked = j.optInt("ctrl_cam", 0) == 1
+        if (j.has("ctrl_mic")) binding.swMic.isChecked = j.optInt("ctrl_mic", 0) == 1
+        // Привод: в /telemetry состояние называется drive_enabled (ctrl_drive — только в ответе /control).
+        if (j.has("drive_enabled")) binding.swDrive.isChecked = j.optInt("drive_enabled", 1) == 1
         updatingSwitches = false
     }
 
@@ -421,6 +433,7 @@ class MainActivity : AppCompatActivity() {
             statusLine.takeIf { it.isNotEmpty() },
             wifiInfo.takeIf { it.isNotEmpty() },
             tofInfo.takeIf { it.isNotEmpty() },
+            driveInfo.takeIf { it.isNotEmpty() },
             motorInfo.takeIf { it.isNotEmpty() },
         )
         runOnUiThread {
