@@ -79,8 +79,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 17u;
-static constexpr char kXiaoFwVersion[] = "1.3.1";
+static constexpr uint32_t kXiaoFwBuild = 18u;
+static constexpr char kXiaoFwVersion[] = "1.3.2";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -420,7 +420,10 @@ static void streamTcpTask(void * /*arg*/) {
       if (remain == 0) {
         g_streamFrameCount++;
       }
-      vTaskDelay(1);  // отдать квант Wi-Fi/микрофону
+      /* Троттл ~15 fps: без паузы видео забивало радио, и round-trip /drive
+         с телефона рос (джойстик лагал). 60 мс между кадрами оставляют
+         слоты Wi-Fi управлению; для FPV-езды 15 fps достаточно. */
+      vTaskDelay(pdMS_TO_TICKS(60));
     }
     gStreamServing = false;
     c.stop();
