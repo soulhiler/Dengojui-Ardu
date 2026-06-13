@@ -87,6 +87,10 @@
 
 Выводы сборок: **ESP32 = низкоуровневый узел (сенсоры/моторы/одометрия), карта/SLAM = на SBC или ПК.** Чистого SLAM на ESP32 в рабочих проектах нет. MentorPi/Minibot/kaiaai доказывают наш сплит. Pi 4 4ГБ — пол для slam_toolbox, Pi 5 — комфорт; **Pi Zero 2W в рабочих SLAM-сборках не встречается**. Для мультизонного ToF массовый паттерн — **3D point cloud + плоскости (Ferrolho), а не SLAM** — это и есть реалистичная «стройка пространства» на нашем железе сейчас.
 
+**🏗 Эталонная архитектура — паттерн `linorobot2`** (если пойдём в ROS2): ESP32-S3 несёт **micro-ROS firmware** (подписка `/cmd_vel`, PID моторов, публикует `/odom` + `/imu`, опц. проброс LiDAR по UDP); SBC несёт ROS2 + `robot_localization` EKF (odom+IMU) → slam_toolbox → Nav2. Поддерживает LD06/LD19/STL27L из коробки. Ближайший **буквальный двойник нашего железа** — `PrwTsrt/microros_esp32_diffdrive` (**Yahboom ESP32-S3 + Orange Pi 5B**), плюс RoboFoundry build-log по той же связке. → https://github.com/linorobot/linorobot2 , https://github.com/hippo5329/linorobot2_hardware/wiki
+
+**⚠ Честный пробел:** законченного DIY-робота, который строит **навигационную карту по мультизонному ToF**, в природе нет — только драйверы и 3D-сканеры (Ferrolho). Если цель — именно карта для навигации, мультизонный ToF не заменяет 360° LiDAR; ToF остаётся для реактивного объезда/cliff/3D-снимков. Сверхдешёвый вход в LiDAR-SLAM — салвадж-лидары **Xiaomi LDS02RR (~$15)** / 3irobotix Delta-2, которые ESP32 умеет принимать (Maker's Pet), SLAM — на SBC.
+
 ## 5. Что это значит для нашего робота — роадмап
 
 1. **Сейчас (без покупок):** ToF → 8 лучей → **log-odds локальная сетка** в PSRAM XIAO + dead-reckoning (пока без IMU — только энкодеры). Радар-UI/`/tof` уже есть; добавить накопление сетки. Реактивный объезд + cliff по строкам (см. `vl53l7cx-best-practices.md`).
@@ -117,3 +121,6 @@
 - tof_imager_micro_ros (VL53L7CX→ROS2 PointCloud2): https://github.com/adityakamath/tof_imager_micro_ros
 - kaiaai / Maker's Pet (ESP32 micro-ROS + ROS2): https://github.com/kaiaai/kaiaai
 - MappingRover (Thrun occupancy grid на сонаре): https://github.com/stheophil/MappingRover
+- linorobot2_hardware (ESP32-S3 micro-ROS firmware): https://github.com/hippo5329/linorobot2_hardware/wiki
+- PrwTsrt ESP32-S3 + Orange Pi 5B (двойник железа): https://github.com/PrwTsrt/microros_esp32_diffdrive
+- Maker's Pet — дешёвые LiDAR на ESP32 (Xiaomi LDS02RR ~$15): https://makerspet.com/
