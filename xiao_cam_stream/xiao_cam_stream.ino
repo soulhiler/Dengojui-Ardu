@@ -79,8 +79,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 18u;
-static constexpr char kXiaoFwVersion[] = "1.3.2";
+static constexpr uint32_t kXiaoFwBuild = 19u;
+static constexpr char kXiaoFwVersion[] = "1.3.3";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -366,6 +366,33 @@ static void micTcpTask(void * /*arg*/) {
  *  эта задача — HTTP-сервер всегда свободен. */
 static WiFiServer gStreamTcpServer{82};
 static volatile bool gStreamServing = false;
+/* Камера НЕ реентерабельна: esp_camera_fb_get() из задачи стрима (:82) и из
+   handleCapture (/capture, поток WebServer) одновременно роняет плату. Мьютекс
+   сериализует доступ. Создаётся в setup() ДО старта задачи стрима. */
+static SemaphoreHandle_t gCamMutex = nullptr;
+
+/** Захватить кадр под мьютексом. nullptr ВСЕГДА = мьютекс не держим (камера
+   занята дольше waitMs или кадр не пришёл) — звать camFbReturnLocked не нужно. */
+static camera_fb_t *camFbGetLocked(uint32_t waitMs) {
+  if (gCamMutex && xSemaphoreTake(gCamMutex, pdMS_TO_TICKS(waitMs)) != pdTRUE) {
+    return nullptr;
+  }
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb && gCamMutex) {
+    xSemaphoreGive(gCamMutex);  // мьютекс держали, но кадра нет — отдать
+  }
+  return fb;
+}
+
+/** Вернуть кадр и отпустить мьютекс. Звать ТОЛЬКО если camFbGetLocked != nullptr. */
+static void camFbReturnLocked(camera_fb_t *fb) {
+  if (fb) {
+    esp_camera_fb_return(fb);
+  }
+  if (gCamMutex) {
+    xSemaphoreGive(gCamMutex);
+  }
+}
 
 static void streamTcpTask(void * /*arg*/) {
   for (;;) {
@@ -397,9 +424,9 @@ static void streamTcpTask(void * /*arg*/) {
               "Content-Type: multipart/x-mixed-replace; boundary=mjpeg\r\n\r\n"));
     gStreamServing = true;
     while (c.connected() && gCamOk && gCtrlCamEnabled) {
-      camera_fb_t *fb = esp_camera_fb_get();
+      camera_fb_t *fb = camFbGetLocked(200);
       if (!fb) {
-        vTaskDelay(pdMS_TO_TICKS(3));
+        vTaskDelay(pdMS_TO_TICKS(5));
         continue;
       }
       c.print(F("\r\n--mjpeg\r\nContent-Type: image/jpeg\r\nContent-Length: "));
@@ -416,7 +443,7 @@ static void streamTcpTask(void * /*arg*/) {
         p += w;
         remain -= w;
       }
-      esp_camera_fb_return(fb);
+      camFbReturnLocked(fb);
       if (remain == 0) {
         g_streamFrameCount++;
       }
@@ -584,9 +611,9 @@ static void handleCapture() {
                   gCamOk ? "camera disabled (GET /control?cam=1)" : "camera hardware not present");
     return;
   }
-  camera_fb_t *fb = esp_camera_fb_get();
+  camera_fb_t *fb = camFbGetLocked(600);  // ждём, если кадр держит задача стрима
   if (!fb) {
-    server.send(500, "text/plain", "capture failed");
+    server.send(503, "text/plain", "camera busy");
     return;
   }
   server.sendHeader("Cache-Control", "no-store");
@@ -594,7 +621,7 @@ static void handleCapture() {
   server.setContentLength(fb->len);
   server.send(200, "image/jpeg", "");
   server.sendContent((const char *)fb->buf, fb->len);
-  esp_camera_fb_return(fb);
+  camFbReturnLocked(fb);
   g_captureCount++;
 }
 
@@ -1398,8 +1425,14 @@ void setup() {
   }
 #endif
   // MJPEG-задача на :82 (поднимаем всегда: без камеры отвечает 503).
+  // Мьютекс камеры ДО старта задачи — сериализует fb_get со /capture.
+  if (!gCamMutex) {
+    gCamMutex = xSemaphoreCreateMutex();
+  }
   gStreamTcpServer.begin(82);
-  if (xTaskCreatePinnedToCore(streamTcpTask, "mjpegTcp", 8192, nullptr, 1, nullptr, 1) != pdPASS) {
+  // Стек 16 КБ: при 8 КБ задача переполняла стек под нагрузкой (camera +
+  // WiFiClient.write + String) и роняла плату.
+  if (xTaskCreatePinnedToCore(streamTcpTask, "mjpegTcp", 16384, nullptr, 1, nullptr, 1) != pdPASS) {
     Serial.println(F("stream: MJPEG task start failed"));
   } else {
     Serial.println(F("stream: MJPEG on :82 (/stream на :80 -> 302 redirect)"));
