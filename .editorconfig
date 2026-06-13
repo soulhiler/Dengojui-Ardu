@@ -1,0 +1,28 @@
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{kt,kts}]
+indent_size = 4
+
+[*.py]
+indent_size = 4
+
+[*.{ino,h,hpp,c,cpp}]
+indent_size = 2
+
+# Должны быть LF, иначе sh-хук/скрипты ломаются на Unix/CI.
+[.githooks/*]
+end_of_line = lf
+
+[*.sh]
+end_of_line = lf
+
+# В Markdown трейлинг-пробелы значимы (жёсткий перенос строки).
+[*.md]
+trim_trailing_whitespace = false

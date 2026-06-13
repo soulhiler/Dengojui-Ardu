@@ -15,6 +15,7 @@
  * Телеметрия: каждые ~1.5 с в Serial и GET /telemetry — MCU, память, flash/OTA, Wi‑Fi, BLE (LE), PDM‑микрофон Sense, AP (BSS), камера, RTOS.
  * Управление: GET /control?cam=0|1&mic=0|1&ble=0|1&wifi=0|1&drive=0|1 (wifi — эко‑сон радио).
  * Привод: GET /drive?l=-255..255&r=...  или /drive?stop=1  (пины — drive_config.h).
+ * ToF VL53L7CX (мультизонный): tof_mm в /telemetry — минимум по центральной полосе; сетка зон — GET /tof.
  * Сбор на ПК (по умолчанию): Wi‑Fi GET /telemetry → USB Serial → BLE (компактный JSON в GATT). Скрипт: tools/xiao_serial_telemetry.py
  * Панель в одном окне: прокси http://127.0.0.1:8898/telemetry
  *
@@ -78,8 +79,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 15u;
-static constexpr char kXiaoFwVersion[] = "1.2.4";
+static constexpr uint32_t kXiaoFwBuild = 19u;
+static constexpr char kXiaoFwVersion[] = "1.3.3";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -277,8 +278,11 @@ static bool initCamera() {
 
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      /* JPEG: меньше число = выше качество (0–63). 2 — почти максимум; 0–1 часто нестабильны / огромный битрейт. */
-      config.jpeg_quality = 2;
+      /* Стабильный непрерывный MJPEG важнее макс. разрешения: QXGA/UXGA @ q2
+         на OV3660 переполняет буфер (cam_hal FB-OVF) → esp_camera_fb_get()=NULL,
+         кадров нет вообще. SVGA + q12 отдаётся надёжно. q: меньше = качественнее. */
+      config.frame_size = FRAMESIZE_SVGA;
+      config.jpeg_quality = 12;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
@@ -305,14 +309,9 @@ static bool initCamera() {
   }
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      if (s->id.PID == OV3660_PID) {
-        s->set_framesize(s, FRAMESIZE_QXGA);
-        s->set_quality(s, 2);
-      } else {
-        /* OV2640 и др.: UXGA — типичный максимум разрешения; выше — только с другой матрицей. */
-        s->set_framesize(s, FRAMESIZE_UXGA);
-        s->set_quality(s, 2);
-      }
+      /* Для OV3660 и OV2640 одинаково: стабильный поток важнее разрешения (FB-OVF, см. выше). */
+      s->set_framesize(s, FRAMESIZE_SVGA);
+      s->set_quality(s, 12);
     } else {
       s->set_framesize(s, FRAMESIZE_SVGA);
       s->set_quality(s, 6);
@@ -359,6 +358,104 @@ static void micTcpTask(void * /*arg*/) {
   }
 }
 #endif
+
+/** TCP :82 — MJPEG в отдельной задаче. Старый handleStream крутил
+ *  while(connected) ВНУТРИ единственного потока WebServer: пока телефон
+ *  смотрел видео, /drive и /telemetry не обрабатывались вовсе (и watchdog
+ *  привода не тикал). Теперь :80/stream отвечает 302 → :82, а кадры гонит
+ *  эта задача — HTTP-сервер всегда свободен. */
+static WiFiServer gStreamTcpServer{82};
+static volatile bool gStreamServing = false;
+/* Камера НЕ реентерабельна: esp_camera_fb_get() из задачи стрима (:82) и из
+   handleCapture (/capture, поток WebServer) одновременно роняет плату. Мьютекс
+   сериализует доступ. Создаётся в setup() ДО старта задачи стрима. */
+static SemaphoreHandle_t gCamMutex = nullptr;
+
+/** Захватить кадр под мьютексом. nullptr ВСЕГДА = мьютекс не держим (камера
+   занята дольше waitMs или кадр не пришёл) — звать camFbReturnLocked не нужно. */
+static camera_fb_t *camFbGetLocked(uint32_t waitMs) {
+  if (gCamMutex && xSemaphoreTake(gCamMutex, pdMS_TO_TICKS(waitMs)) != pdTRUE) {
+    return nullptr;
+  }
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb && gCamMutex) {
+    xSemaphoreGive(gCamMutex);  // мьютекс держали, но кадра нет — отдать
+  }
+  return fb;
+}
+
+/** Вернуть кадр и отпустить мьютекс. Звать ТОЛЬКО если camFbGetLocked != nullptr. */
+static void camFbReturnLocked(camera_fb_t *fb) {
+  if (fb) {
+    esp_camera_fb_return(fb);
+  }
+  if (gCamMutex) {
+    xSemaphoreGive(gCamMutex);
+  }
+}
+
+static void streamTcpTask(void * /*arg*/) {
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) {
+      vTaskDelay(pdMS_TO_TICKS(150));
+      continue;
+    }
+    WiFiClient c = gStreamTcpServer.available();
+    if (!c) {
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
+    }
+    // Съесть HTTP-заголовки запроса (до пустой строки).
+    c.setTimeout(2);
+    const uint32_t t0 = millis();
+    while (c.connected() && millis() - t0 < 1500u) {
+      const String line = c.readStringUntil('\n');
+      if (line.length() <= 1) {
+        break;  // "\r" или пусто — конец заголовков
+      }
+    }
+    if (!gCamOk || !gCtrlCamEnabled) {
+      c.print(F("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n"
+                "Connection: close\r\n\r\ncamera off\n"));
+      c.stop();
+      continue;
+    }
+    c.print(F("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n"
+              "Content-Type: multipart/x-mixed-replace; boundary=mjpeg\r\n\r\n"));
+    gStreamServing = true;
+    while (c.connected() && gCamOk && gCtrlCamEnabled) {
+      camera_fb_t *fb = camFbGetLocked(200);
+      if (!fb) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        continue;
+      }
+      c.print(F("\r\n--mjpeg\r\nContent-Type: image/jpeg\r\nContent-Length: "));
+      c.print(fb->len);
+      c.print(F("\r\n\r\n"));
+      size_t remain = fb->len;
+      const uint8_t *p = fb->buf;
+      while (remain > 0 && c.connected()) {
+        const size_t chunk = remain > 4096 ? 4096 : remain;
+        const size_t w = c.write(p, chunk);
+        if (w == 0) {
+          break;
+        }
+        p += w;
+        remain -= w;
+      }
+      camFbReturnLocked(fb);
+      if (remain == 0) {
+        g_streamFrameCount++;
+      }
+      /* Троттл ~15 fps: без паузы видео забивало радио, и round-trip /drive
+         с телефона рос (джойстик лагал). 60 мс между кадрами оставляют
+         слоты Wi-Fi управлению; для FPV-езды 15 fps достаточно. */
+      vTaskDelay(pdMS_TO_TICKS(60));
+    }
+    gStreamServing = false;
+    c.stop();
+  }
+}
 
 /** PDM Sense: CLK=42, DATA=41 (Seeed Wiki). Не пересекается с пинами камеры XIAO. */
 static void telemetryMicInit() {
@@ -480,63 +577,30 @@ static void handleRoot() {
   }
   html += F("<p><a href=\"/stream\">/stream</a> · <a href=\"/capture\">/capture</a> · <a href=\"/telemetry\">/telemetry</a></p>");
   html += F("<p><small>Mic PCM (TCP 81, s16le 16 kHz mono) — через прокси: <code>/mic_s16</code></small></p>");
-  html += F("<p><small>Привод: <code>/drive?l=0&r=0</code> · ToF <code>/status</code> · карта <code>/scan360?steps=30</code> · звук <code>/beep</code> <code>/melody</code></small></p>");
+  html += F("<p><small>Привод: <code>/drive?l=0&r=0</code> · ToF <code>/status</code> <code>/tof</code> · карта <code>/scan360?steps=30</code> · звук <code>/beep</code> <code>/melody</code></small></p>");
   html += F("</body></html>");
   server.send(200, "text/html; charset=utf-8", html);
 }
 
 static void handleStream() {
-  WiFiClient client = server.client();
-  if (!client || !client.connected()) {
-    return;
-  }
+  /* MJPEG отдаёт streamTcpTask на :82. Раньше кадры гнались прямо отсюда
+     в бесконечном while — единственный поток WebServer был занят стримом,
+     и /drive с телефона не обрабатывался вовсе (моторы «не работали»). */
   if (!gCamOk || !gCtrlCamEnabled) {
-    client.println(F("HTTP/1.1 503 Service Unavailable"));
-    client.println(F("Content-Type: text/plain; charset=utf-8"));
-    client.println(F("Connection: close"));
-    client.println();
-    client.println(gCamOk ? F("camera disabled (GET /control?cam=1)") : F("camera hardware not present"));
+    server.sendHeader(F("Cache-Control"), F("no-store"));
+    server.send(503, F("text/plain; charset=utf-8"),
+                gCamOk ? F("camera disabled (GET /control?cam=1)") : F("camera hardware not present"));
     return;
   }
-
-  const char *const boundary = "mjpeg";
-
-  client.println(F("HTTP/1.1 200 OK"));
-  client.println(F("Access-Control-Allow-Origin: *"));
-  // Не ставить Connection: close — часть клиентов рвёт MJPEG после первого кадра.
-  client.print(F("Content-Type: multipart/x-mixed-replace; boundary="));
-  client.println(boundary);
-  client.println();
-
-  while (client.connected()) {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
-      delay(2);
-      continue;
-    }
-    client.print(F("\r\n--"));
-    client.print(boundary);
-    client.print(F("\r\nContent-Type: image/jpeg\r\nContent-Length: "));
-    client.print(fb->len);
-    client.print(F("\r\n\r\n"));
-
-    size_t remain = fb->len;
-    uint8_t *p = fb->buf;
-    while (remain > 0 && client.connected()) {
-      const size_t chunk = remain > 4096 ? 4096 : remain;
-      const size_t w = client.write(p, chunk);
-      if (w == 0) {
-        break;
-      }
-      p += w;
-      remain -= w;
-    }
-    esp_camera_fb_return(fb);
-    if (remain == 0) {
-      g_streamFrameCount++;
-    }
-    yield();
+  String loc = String(F("http://")) + server.hostHeader();
+  const int colon = loc.indexOf(':', 7);  // отрезать порт, если был в Host
+  if (colon > 0) {
+    loc.remove(colon);
   }
+  loc += F(":82/stream");
+  server.sendHeader(F("Location"), loc);
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.send(302, F("text/plain; charset=utf-8"), loc);
 }
 
 static void handleCapture() {
@@ -547,9 +611,9 @@ static void handleCapture() {
                   gCamOk ? "camera disabled (GET /control?cam=1)" : "camera hardware not present");
     return;
   }
-  camera_fb_t *fb = esp_camera_fb_get();
+  camera_fb_t *fb = camFbGetLocked(600);  // ждём, если кадр держит задача стрима
   if (!fb) {
-    server.send(500, "text/plain", "capture failed");
+    server.send(503, "text/plain", "camera busy");
     return;
   }
   server.sendHeader("Cache-Control", "no-store");
@@ -557,7 +621,7 @@ static void handleCapture() {
   server.setContentLength(fb->len);
   server.send(200, "image/jpeg", "");
   server.sendContent((const char *)fb->buf, fb->len);
-  esp_camera_fb_return(fb);
+  camFbReturnLocked(fb);
   g_captureCount++;
 }
 
@@ -1149,6 +1213,10 @@ static void handleBeep() {
   const uint16_t hz = server.hasArg("hz") ? static_cast<uint16_t>(server.arg("hz").toInt()) : 880;
   const uint16_t ms = server.hasArg("ms") ? static_cast<uint16_t>(server.arg("ms").toInt()) : 250;
   const String ch = server.hasArg("ch") ? server.arg("ch") : F("A");
+  if (server.hasArg("gain")) {
+    /* Скважность «голоса» 10..100 % (по умолчанию 10, как на UNO-стенде). */
+    xiaoAudioSetGain(static_cast<uint8_t>(server.arg("gain").toInt()));
+  }
   xiaoAudioBeepHttp(hz, ms, ch.c_str());
   server.send(200, F("application/json; charset=utf-8"), F("{\"ok\":1}"));
 }
@@ -1156,6 +1224,9 @@ static void handleBeep() {
 static void handleMelody() {
   const uint8_t id = server.hasArg("id") ? static_cast<uint8_t>(server.arg("id").toInt()) : 0;
   const String ch = server.hasArg("ch") ? server.arg("ch") : F("A");
+  if (server.hasArg("gain")) {
+    xiaoAudioSetGain(static_cast<uint8_t>(server.arg("gain").toInt()));
+  }
   xiaoAudioMelodyHttp(id, ch.c_str());
   server.send(200, F("application/json; charset=utf-8"), F("{\"ok\":1}"));
 }
@@ -1166,6 +1237,15 @@ static void handleTelemetry() {
   server.sendHeader(F("Cache-Control"), F("no-store"));
   server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
   server.send(200, F("application/json; charset=utf-8"), body);
+}
+
+/** Сетка зон VL53L7CX (мм, -1 = нет цели); при XIAO_TOF_ENABLE 0 — {"ok":0}. */
+static void handleTofGrid() {
+  String j;
+  xiaoTofGridJson(j);
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(200, F("application/json; charset=utf-8"), j);
 }
 
 /** esp32-arduino 3.3: нет WiFi.disconnectReason() — берём reason из системного события. */
@@ -1213,7 +1293,11 @@ static void wifiMaintainSta() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTxTimeoutMs(0);
+  /* 0 мс отбрасывал хвост длинных строк телеметрии (~2 КБ > 256 Б буфера
+     USB-CDC): хост получал рваный JSON, дашборд не парсил ни строки.
+     20 мс — запись ждёт слива буфера; без подключённого хоста (DTR low)
+     HWCDC отбрасывает сразу, loop не тормозится. */
+  Serial.setTxTimeoutMs(20);
   delay(800);
   statusLedInit();
   statusLedBootHello();
@@ -1315,6 +1399,7 @@ void setup() {
   server.on("/capture", HTTP_GET, handleCapture);
   server.on("/telemetry", HTTP_GET, handleTelemetry);
   server.on("/control", HTTP_GET, handleControl);
+  server.on("/tof", HTTP_GET, handleTofGrid);
 #if XIAO_DRIVE_ENABLE
   server.on("/drive", HTTP_GET, handleDrive);
   server.on("/status", HTTP_GET, handleRobotStatus);
@@ -1339,8 +1424,21 @@ void setup() {
     Serial.println(F("mic: TCP :81 disabled (PDM init failed)"));
   }
 #endif
+  // MJPEG-задача на :82 (поднимаем всегда: без камеры отвечает 503).
+  // Мьютекс камеры ДО старта задачи — сериализует fb_get со /capture.
+  if (!gCamMutex) {
+    gCamMutex = xSemaphoreCreateMutex();
+  }
+  gStreamTcpServer.begin(82);
+  // Стек 16 КБ: при 8 КБ задача переполняла стек под нагрузкой (camera +
+  // WiFiClient.write + String) и роняла плату.
+  if (xTaskCreatePinnedToCore(streamTcpTask, "mjpegTcp", 16384, nullptr, 1, nullptr, 1) != pdPASS) {
+    Serial.println(F("stream: MJPEG task start failed"));
+  } else {
+    Serial.println(F("stream: MJPEG on :82 (/stream на :80 -> 302 redirect)"));
+  }
   statusLedSet(StatusLed::Running);
-  Serial.println(F("HTTP: /telemetry /drive /status /scan360 /beep /melody"));
+  Serial.println(F("HTTP: /telemetry /drive /status /tof /scan360 /beep /melody"));
   Serial.println(F("Telemetry: JSON lines in Serial every 1.5s; snapshot GET /telemetry"));
 }
 

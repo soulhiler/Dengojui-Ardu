@@ -44,6 +44,31 @@ class DriveClient(private val scope: CoroutineScope) {
         }
     }
 
+    /** Тогглы платы, как devBar в веб-дашборде: /control?wifi|ble|cam|mic|drive=0|1. */
+    fun control(host: String, key: String, on: Boolean) {
+        scope.launch(Dispatchers.IO) {
+            get("http://$host/control?$key=${if (on) 1 else 0}")
+        }
+    }
+
+    /** Гудок, как кнопка «Beep A» в вебе. gain — скважность «голоса» 10..100 %. */
+    fun beep(host: String, gain: Int) {
+        scope.launch(Dispatchers.IO) {
+            get("http://$host/beep?hz=880&ms=250&ch=A&gain=$gain")
+        }
+    }
+
+    /** Мелодия (id=1 — мелодия 1, id=9 — «привет», id=0 — стоп звука). */
+    fun melody(host: String, id: Int, gain: Int) {
+        scope.launch(Dispatchers.IO) {
+            if (id == 0) {
+                get("http://$host/melody?id=0")
+            } else {
+                get("http://$host/melody?id=$id&ch=A&gain=$gain")
+            }
+        }
+    }
+
     private fun get(url: String) {
         var c: HttpURLConnection? = null
         try {

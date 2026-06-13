@@ -5,9 +5,10 @@
  *
  * TB6612: STBY → 3.3 V (или DRIVE_STBY_PIN). VM — питание моторов, VCC — 3.3 V, общая GND.
  *
- * VL53L0X: отдельная шина I2C — не камера SCCB (39/40).
+ * VL53L7CX: отдельная шина I2C — не камера SCCB (39/40).
  * НЕ использовать GPIO19/20 — это USB D−/D+ (после Wire.begin(20) пропадает COM, Wi‑Fi жив).
  * По умолчанию SDA=GPIO8 (D9), SCL=GPIO9 (D10). Провод SDA с «левого» пина — на D9, не на 20.
+ * LPn модуля обязан быть HIGH (на 3.3 V или XIAO_TOF_LPN_PIN), иначе сенсор молчит на I2C.
  */
 
 #define XIAO_DRIVE_ENABLE 1
@@ -44,10 +45,14 @@
 #define DRIVE_PWM_BITS 8
 #define DRIVE_WATCHDOG_MS 450
 
-/** VL53L0X на шасси (как на UNO). 0 — отключить ToF/радар/scan360 в прошивке. */
+/** VL53L7CX (мультизонный 4×4/8×8). 0 — отключить ToF/радар/scan360 в прошивке. */
 #define XIAO_TOF_ENABLE 1
 #define XIAO_TOF_SDA 8
 #define XIAO_TOF_SCL 9
+/** LPn модуля: -1 = перемычка на 3.3 V; иначе номер GPIO (например 7 = D8). */
+#define XIAO_TOF_LPN_PIN -1
+/** I2C_RST (есть не на всех breakout): -1 = не подключён. */
+#define XIAO_TOF_I2C_RST_PIN -1
 
 /** Звук через обмотки TB6612 (как uno_motor_test). */
 #define XIAO_AUDIO_ENABLE 1

@@ -49,3 +49,16 @@
 #define DRIVE_PWM_BITS 8
 /** Нет новых команд /drive — стоп моторов (мс) */
 #define DRIVE_WATCHDOG_MS 450
+
+/* --- VL53L7CX (мультизонный ToF 4×4/8×8, 0 = отключён) --- */
+/** Энкодеры на D9 (GPIO8) и ToF SDA конфликтуют — либо ToF, либо DRIVE_ENC_R_B. */
+#define XIAO_TOF_ENABLE 1
+#define XIAO_TOF_SDA 8  /* D9 */
+#define XIAO_TOF_SCL 9  /* D10 */
+/** LPn модуля: -1 = перемычка на 3.3 V; иначе номер GPIO (например 7 = D8). */
+#define XIAO_TOF_LPN_PIN -1
+/** I2C_RST (есть не на всех breakout): -1 = не подключён. */
+#define XIAO_TOF_I2C_RST_PIN -1
+
+/** Звук через обмотки TB6612. */
+#define XIAO_AUDIO_ENABLE 1

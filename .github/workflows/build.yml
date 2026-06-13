@@ -1,0 +1,78 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  brain-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: SafetyGovernor unit tests
+        run: python -m unittest discover -s brain -p "test_*.py" -v
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+      - name: Install Arduino libraries
+        # VL53L7CX (ST) — мультизонный ToF, нужен для xiao_tof.h (прошивка 1.3.x)
+        run: arduino-cli lib install "STM32duino VL53L7CX"
+      - name: Provide placeholder secrets.h
+        run: cp xiao_cam_stream/secrets.h.example xiao_cam_stream/secrets.h
+      - name: Compile xiao_cam_stream
+        run: >
+          arduino-cli compile
+          --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi
+          xiao_cam_stream
+
+  android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # публикация APK в rolling-release apk-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Assemble debug APK
+        working-directory: android/XiaoRobot
+        # Unix-скрипта gradlew в репо нет (проект собирался на Windows через
+        # gradlew.bat) — зовём wrapper напрямую из jar, он сам скачает Gradle 8.9.
+        run: >
+          java -cp gradle/wrapper/gradle-wrapper.jar
+          org.gradle.wrapper.GradleWrapperMain
+          --no-daemon assembleDebug
+      - name: Publish APK to rolling release apk-latest
+        # Releases не тратят квоту хранилища артефактов Actions —
+        # upload-artifact падал с "Artifact storage quota has been hit".
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete apk-latest --yes --cleanup-tag || true
+          gh release create apk-latest --prerelease \
+            --title "APK latest (автосборка)" \
+            --notes "Свежий debug-APK из CI. versionCode: см. dist/app-version.txt. Скачать → положить в dist/ на ПК → на телефоне «Обновить»." \
+            --target ${{ github.sha }} \
+            android/XiaoRobot/app/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true   # артефакт — запасной канал; квота может быть исчерпана
+        with:
+          name: xiao-robot-debug-apk
+          path: android/XiaoRobot/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn

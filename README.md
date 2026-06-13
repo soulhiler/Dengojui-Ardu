@@ -14,8 +14,13 @@
 | `xiao_ble_mic_test/` | Тест BLE и PDM‑микрофона |
 | `xiao_cam_viewer.html` | Подсказка по просмотру потока |
 | `android/XiaoRobot/` | Android: камера (`/stream`), мик (TCP `:81`), джойстик → `/drive` |
+| `brain/` | ИИ‑«мозг» (Python): perceive→decide→act поверх HTTP‑контракта; `docs/brain-api.md`, 9 юнит‑тестов |
+| `.github/workflows/build.yml` | CI: тесты `brain/`, сборка прошивки (`arduino-cli` + VL53L7CX), APK |
+| `docs/dev-log.md` | Журнал разработки по фазам + отчёты об инцидентах |
+| `docs/onboarding.md` | Инструкция новичку «с нуля» |
+| `docs/security-history-cleanup.md` | Runbook чистки утёкшего Wi‑Fi пароля из git‑истории |
 | `docs/cursor-chat-archives/` | Архив переписок Cursor (`.jsonl` + `.zip`) |
-| `docs/hardware/wiring-xiao-motor-tof.md` | **Схема:** XIAO + TB6612 + VL53L0X (пины, питание, GND) |
+| `docs/hardware/wiring-xiao-motor-tof.md` | **Схема:** XIAO + TB6612 + VL53L7CX (пины, питание, GND, LPn) |
 | `docs/incident-wifi-pc-router-2026-06-05.md` | Отчёт: сбой Wi‑Fi ПК / роутер Duangdeehouse2 / отладка XIAO (июнь 2026) |
 | `tools/fix_pc_wifi_dihouse.ps1` | Восстановление профилей Duangdeehouse2 на ПК (запуск от администратора) |
 | `tools/xiao_cam_proxy.py` | Прокси с платы на `localhost` (Cursor/браузер) |
@@ -31,6 +36,15 @@
 | `tools/xiao_wifi_ota.ps1` | OTA по Wi‑Fi |
 
 Скопируйте `xiao_cam_stream/secrets.h.example` → `xiao_cam_stream/secrets.h` (файл в `.gitignore`).
+
+## ⚠️ Безопасность питания (читать ПЕРЕД первой пайкой)
+
+**Одну плату XIAO ESP32-S3 уже сожгли петлёй земли** (USB к ПК + батарея 7.4 В одновременно через общий минус → пробой ESD-защиты USB D+/D− → смерть USB-PHY). Полный разбор: [`docs/dev-log.md`](docs/dev-log.md). Чтобы не повторилось:
+
+1. **НИКОГДА не подключай USB к ПК и батарею 7.4 В одновременно.** Прошиваешь по USB — отсоедини батарею. Тестируешь от батареи — отсоедини USB. Нужны оба — ставь USB-isolator (ADuM3160). Если USB-CDC уже мёртв, а Wi-Fi жив — шей по HTTP-OTA (`POST /update`, `tools/xiao_http_ota.py`) или ArduinoOTA `:3232`.
+2. **ВСЕГДА измеряй выход DC-DC Buck мультиметром ДО подключения к XIAO 5V** — цель 5.0 В ± 0.1 В без нагрузки. Buck с AliExpress часто приходит выкрученным на 12+ В.
+3. **Цвет провода = напряжение:** BAT+ (7.4 В) красный/жёлтый толстый; 5 В оранжевый тонкий; 3V3 оранжевый; GND **только чёрный**.
+4. **Желательная защита** (схема цепи в [`docs/hardware/build_wiring.py`](docs/hardware/build_wiring.py)): BMS на батарее, PPTC-предохранитель + AO3401 (обратная полярность) на BAT+, Schottky SS14 на 5V, TVS USBLC6-2SC6 на USB D+/D−, осмотр пайки под лупой.
 
 ## Arduino UNO + TB6612 (USB, тест моторов)
 

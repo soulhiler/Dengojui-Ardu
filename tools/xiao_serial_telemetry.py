@@ -763,8 +763,21 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           <div id="radarDist" style="text-align:center;font-size:0.85rem;color:#8b9cb3;margin-top:6px">—</div>
           <div style="font-size:0.75rem;color:#8b9cb3;margin-top:4px">Профиль: <span id="tofProfile">—</span> · замеров: <span id="tofCount">0</span></div>
         </div>
-        <div id="joy" style="width:140px;height:140px;border-radius:50%;background:#1c2738;border:2px solid #30363d;position:relative;touch-action:none">
-          <div id="knob" style="width:44px;height:44px;border-radius:50%;background:#5cadff;position:absolute;left:48px;top:48px;box-shadow:0 0 12px rgba(92,173,255,0.5)"></div>
+        <div>
+          <div id="joy" style="width:168px;height:168px;border-radius:50%;background:#1c2738;border:2px solid #30363d;position:relative;touch-action:none">
+            <div style="position:absolute;left:50%;top:6px;transform:translateX(-50%);color:#8b9cb3;font-size:14px;line-height:1;pointer-events:none;user-select:none">&#9650;</div>
+            <div style="position:absolute;left:50%;bottom:6px;transform:translateX(-50%);color:#8b9cb3;font-size:14px;line-height:1;pointer-events:none;user-select:none">&#9660;</div>
+            <div style="position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#8b9cb3;font-size:14px;line-height:1;pointer-events:none;user-select:none">&#9664;</div>
+            <div style="position:absolute;right:8px;top:50%;transform:translateY(-50%);color:#8b9cb3;font-size:14px;line-height:1;pointer-events:none;user-select:none">&#9654;</div>
+            <div id="knob" style="width:44px;height:44px;border-radius:50%;background:#5cadff;position:absolute;left:62px;top:62px;box-shadow:0 0 12px rgba(92,173,255,0.5)"></div>
+          </div>
+          <div id="joyVal" style="text-align:center;font-size:0.75rem;color:#8b9cb3;margin-top:6px">L 0 &middot; R 0</div>
+          <div style="margin-top:10px;width:168px">
+            <div style="font-size:0.72rem;color:#8b9cb3">Мощность: <span id="maxSpdVal">180</span>/255</div>
+            <input type="range" id="maxSpd" min="40" max="255" value="180" style="width:100%">
+            <div style="font-size:0.72rem;color:#8b9cb3;margin-top:4px">Пение (скважность): <span id="audGainVal">10</span>%</div>
+            <input type="range" id="audGain" min="10" max="100" value="10" style="width:100%">
+          </div>
         </div>
         <div>
           <canvas id="mapGrid" width="320" height="320" style="image-rendering:pixelated;background:#0d1117;border-radius:8px;border:1px solid #30363d"></canvas>
@@ -1020,7 +1033,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       const ac = new AbortController();
       const to = setTimeout(() => ac.abort(), timeoutMs || 8000);
       try {{
-        const r = await fetch("/board/" + path + "&r=" + Date.now(), {{ cache: "no-store", signal: ac.signal }});
+        const r = await fetch("/board/" + path + "&_ts=" + Date.now(), {{ cache: "no-store", signal: ac.signal }});
         const t = await r.text();
         if (!r.ok) throw new Error("HTTP " + r.status + " " + t.slice(0, 120));
         return JSON.parse(t);
@@ -1030,10 +1043,25 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       await boardFetch("drive?l=" + l + "&r=" + r + "&q=1", 3000);
     }}
     const joy = document.getElementById("joy"), knob = document.getElementById("knob");
+    const joyVal = document.getElementById("joyVal");
+    // Регуляторы (как на UNO-стенде): мощность моторов и скважность «пения».
+    const maxSpdEl = document.getElementById("maxSpd"), maxSpdValEl = document.getElementById("maxSpdVal");
+    const audGainEl = document.getElementById("audGain"), audGainValEl = document.getElementById("audGainVal");
+    function sliderInit(el, lbl, key, defv) {{
+      if (!el) return;
+      el.value = localStorage.getItem(key) || defv;
+      if (lbl) lbl.textContent = el.value;
+      el.addEventListener("input", () => {{ if (lbl) lbl.textContent = el.value; localStorage.setItem(key, el.value); }});
+    }}
+    sliderInit(maxSpdEl, maxSpdValEl, "joy_max_spd", "180");
+    sliderInit(audGainEl, audGainValEl, "audio_gain", "10");
+    function maxSpdV() {{ return maxSpdEl ? (parseInt(maxSpdEl.value, 10) || 180) : 180; }}
+    function gainV() {{ return audGainEl ? (parseInt(audGainEl.value, 10) || 10) : 10; }}
     let dragging = false, joyL = 0, joyR = 0, driveTimer = null;
-    function centerKnob() {{ if (!knob) return; knob.style.left = "48px"; knob.style.top = "48px"; joyL = 0; joyR = 0; }}
+    function joyValShow() {{ if (joyVal) joyVal.textContent = "L " + joyL + " · R " + joyR; }}
+    function centerKnob() {{ if (!knob) return; knob.style.left = "62px"; knob.style.top = "62px"; joyL = 0; joyR = 0; joyValShow(); }}
     if (joy && knob) {{
-      const R = 48;
+      const R = 62;
       joy.addEventListener("pointerdown", (e) => {{
         dragging = true; e.preventDefault();
         if (driveTimer) clearInterval(driveTimer);
@@ -1044,9 +1072,11 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
         const rect = joy.getBoundingClientRect(), cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
         let dx = e.clientX - cx, dy = e.clientY - cy;
         const d = Math.hypot(dx, dy); if (d > R) {{ dx *= R/d; dy *= R/d; }}
-        knob.style.left = (48 + dx) + "px"; knob.style.top = (48 + dy) + "px";
-        const y = -dy / R, x = dx / R; joyL = Math.round(255 * Math.max(-1, Math.min(1, y + x)));
-        joyR = Math.round(255 * Math.max(-1, Math.min(1, y - x)));
+        knob.style.left = (62 + dx) + "px"; knob.style.top = (62 + dy) + "px";
+        const y = -dy / R, x = dx / R, sp = maxSpdV();
+        joyL = Math.round(sp * Math.max(-1, Math.min(1, y + x)));
+        joyR = Math.round(sp * Math.max(-1, Math.min(1, y - x)));
+        joyValShow();
       }});
       window.addEventListener("pointerup", () => {{
         if (!dragging) return; dragging = false;
@@ -1072,9 +1102,9 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
     if (btnMapClr) btnMapClr.onclick = () => {{ mapLog.fill(0); drawMapGrid(); }};
     drawMapGrid();
     document.getElementById("btnRobotStop")?.addEventListener("click", () => boardFetch("drive?stop=1", 3000));
-    document.getElementById("btnBeep")?.addEventListener("click", () => boardFetch("beep?hz=880&ms=250&ch=A", 5000));
-    document.getElementById("btnMel1")?.addEventListener("click", () => boardFetch("melody?id=1&ch=A", 5000));
-    document.getElementById("btnSayPrivet")?.addEventListener("click", () => boardFetch("melody?id=9&ch=A", 15000));
+    document.getElementById("btnBeep")?.addEventListener("click", () => boardFetch("beep?hz=880&ms=250&ch=A&gain=" + gainV(), 5000));
+    document.getElementById("btnMel1")?.addEventListener("click", () => boardFetch("melody?id=1&ch=A&gain=" + gainV(), 5000));
+    document.getElementById("btnSayPrivet")?.addEventListener("click", () => boardFetch("melody?id=9&ch=A&gain=" + gainV(), 15000));
     document.getElementById("btnMelStop")?.addEventListener("click", () => boardFetch("melody?id=0", 3000));
 
     function render(obj) {{
@@ -1172,7 +1202,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           const rto = setTimeout(function () {{ rac.abort(); }}, 12000);
           let r;
           try {{
-            r = await fetch("/board/control?" + encodeURIComponent(key) + "=" + next + "&r=" + Date.now(), {{
+            r = await fetch("/board/control?" + encodeURIComponent(key) + "=" + next + "&_ts=" + Date.now(), {{
               cache: "no-store",
               signal: rac.signal
             }});
@@ -1382,6 +1412,9 @@ def _run_http_mode(
 
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        # Сокет-таймаут на соединение: зависший клиент (закрытая вкладка,
+        # оборванный Wi-Fi телефона) не блокирует поток обработчика навечно.
+        timeout = 30
 
         def log_message(self, fmt, *args):
             line = fmt % args
@@ -1445,13 +1478,62 @@ def _run_http_mode(
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(body)
+                elif path in ("/app/version.json", "/app/apk"):
+                    # Самообновление Android-приложения по LAN: версия из
+                    # dist/app-version.txt (то же число читает gradle при сборке),
+                    # APK — самый свежий *.apk в dist/.
+                    import glob as _glob
+
+                    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    dist_dir = os.path.join(repo_root, "dist")
+                    apks = sorted(
+                        _glob.glob(os.path.join(dist_dir, "*.apk")),
+                        key=os.path.getmtime,
+                        reverse=True,
+                    )
+                    if path == "/app/version.json":
+                        try:
+                            with open(os.path.join(dist_dir, "app-version.txt"), "r", encoding="utf-8") as vf:
+                                ver = int(vf.read().strip())
+                        except Exception:
+                            ver = 0
+                        body = json.dumps(
+                            {"versionCode": ver, "apk": "/app/apk", "apk_present": 1 if apks else 0}
+                        ).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        if not apks:
+                            self.send_error(404, "no apk in dist/ (download CI artifact there)")
+                            return
+                        with open(apks[0], "rb") as af:
+                            data = af.read()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/vnd.android.package-archive")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.send_header("Content-Disposition", 'attachment; filename="xiao-robot.apk"')
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(data)
                 elif path.startswith("/board/"):
                     import urllib.request
+                    from urllib.parse import parse_qsl, urlencode
 
+                    # Кэш-бастер вырезаем ПО ИМЕНИ ключа (_ts/_), а не срезом строки:
+                    # старый split("&r=") отрезал параметр правого колеса r=... у /drive,
+                    # и повороты не работали (оба колеса получали команду левого).
                     qs = ""
                     if "?" in self.path:
-                        qs = self.path.split("?", 1)[1]
-                        qs = qs.split("&r=", 1)[0].split("&_=", 1)[0]
+                        raw_qs = self.path.split("?", 1)[1]
+                        pairs = [(k, v) for (k, v) in parse_qsl(raw_qs, keep_blank_values=True)
+                                 if k not in ("_", "_ts")]
+                        qs = urlencode(pairs)
                     sub = path[7:]
                     if sub.startswith("control"):
                         board_path = "control"
@@ -1549,9 +1631,13 @@ def _run_http_mode(
                 except Exception:
                     pass
 
-    # Один поток обработки HTTP: на Windows ThreadingMixIn + частый опрос вкладки давали «зависание»
-    # (TIME_WAIT, исчерпание потоков/очереди). Для одного локального UI этого достаточно.
-    class Srv(socketserver.TCPServer):
+    # Многопоточный HTTP: один зависший хендлер (мёртвая плата у /board/*,
+    # долгая раздача APK, залипший long-poll вкладки) не должен блокировать
+    # остальные запросы. Прошлую проблему «ThreadingMixIn + частый опрос =
+    # зависание» лечит timeout=30 на соединении (см. класс H) + daemon-потоки:
+    # застрявшие клиенты отваливаются сами и не копятся.
+    class Srv(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        daemon_threads = True
         allow_reuse_address = False
         request_queue_size = 512
 
@@ -1579,7 +1665,13 @@ def _run_http_mode(
     if start_ble:
         print("BLE: имя~%r GATT %s" % (ble_name, ble_char_uuid), file=sys.stderr)
     print("Ctrl+C — остановить сервер.", file=sys.stderr)
-    with Srv(("127.0.0.1", http_port), H) as httpd:
+    _lan_ip = _local_lan_ip()
+    if _lan_ip:
+        print("LAN (телефон, «Обновить»): http://%s:%d/app/version.json" % (_lan_ip, http_port), file=sys.stderr)
+    _try_register_mdns(http_port, _lan_ip)
+    # 0.0.0.0: телефон качает APK (/app/apk) и видит панель по LAN — на
+    # 127.0.0.1 «Обновить» с телефона физически не работало.
+    with Srv(("0.0.0.0", http_port), H) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
@@ -1657,6 +1749,44 @@ def _run_console_mode(port: str, baud: int, log_path: Path | None, pretty: bool)
             log_f.close()
 
     return 0
+
+
+def _local_lan_ip() -> str:
+    """IP этого ПК в LAN (без трафика: UDP connect не шлёт пакетов)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return ""
+
+
+def _try_register_mdns(http_port: int, lan_ip: str) -> None:
+    """mDNS-анонс «xiao-dash»: телефон находит ПК сам (кнопка «Обновить»).
+
+    Необязательная зависимость: pip install zeroconf. Без неё — просто подсказка.
+    """
+    if not lan_ip:
+        return
+    try:
+        from zeroconf import ServiceInfo, Zeroconf  # type: ignore[import-not-found]
+
+        info = ServiceInfo(
+            "_http._tcp.local.",
+            "xiao-dash._http._tcp.local.",
+            addresses=[socket.inet_aton(lan_ip)],
+            port=http_port,
+            properties={"path": "/app/version.json"},
+        )
+        Zeroconf().register_service(info)
+        print("mDNS: xiao-dash → %s:%d (автопоиск ПК с телефона)" % (lan_ip, http_port), file=sys.stderr)
+    except ImportError:
+        print("mDNS: выкл — для автопоиска ПК с телефона: pip install zeroconf", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 - анонс не должен ронять дашборд
+        print("mDNS: ошибка анонса (%s)" % e, file=sys.stderr)
 
 
 def main() -> int:
