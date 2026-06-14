@@ -95,7 +95,7 @@ def _synth_frame(yaw_deg: float):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="XIAO камера+ToF → цветное облако точек (PLY)")
+    ap = argparse.ArgumentParser(description="XIAO камера+ToF -> цветное облако точек (PLY)")
     ap.add_argument("--ip", help="IP платы XIAO (живой режим)")
     ap.add_argument("--offline", help="каталог с сохранёнными кадрами frame_NNN.jpg/.tof.json")
     ap.add_argument("--synth", action="store_true", help="синтетический тест без железа")
@@ -166,7 +166,7 @@ def main() -> int:
 
     n = cloud.write_ply(args.out)
     print(f"готово: {len(frames)} кадр(ов), {total} точек добавлено, "
-          f"{n} после прореживания (воксель {args.voxel} м) → {args.out}")
+          f"{n} после прореживания (воксель {args.voxel} м) -> {args.out}")
     if not _HAVE_PIL:
         print("(Pillow не установлен — цвет по дистанции; pip install pillow для цвета камеры)",
               file=sys.stderr)
