@@ -31,6 +31,12 @@
 #ifndef XIAO_TOF_SIGMA_MAX_MM
 #define XIAO_TOF_SIGMA_MAX_MM 15   /* порог шума зоны (мм); 0 — фильтр выкл */
 #endif
+#ifndef XIAO_TOF_CLIFF_STOP
+#define XIAO_TOF_CLIFF_STOP 0      /* 1 — аварийный стоп привода при обрыве (после проверки калибровки) */
+#endif
+#ifndef XIAO_TOF_CLIFF_MIN
+#define XIAO_TOF_CLIFF_MIN 2       /* сколько зон-обрывов должно совпасть для срабатывания */
+#endif
 
 enum XiaoTofProfile : uint8_t {
   XIAO_TOF_BALANCED = 0, /* 4×4, 30 Гц */
@@ -61,6 +67,17 @@ static VL53L7CX gTof(&Wire, XIAO_TOF_LPN_PIN, XIAO_TOF_I2C_RST_PIN);
 static VL53L7CX_ResultsData gTofResults;
 static uint8_t gTofZones = VL53L7CX_RESOLUTION_4X4; /* 16 или 64 */
 static int16_t gTofGrid[VL53L7CX_RESOLUTION_8X8];   /* мм по зонам, -1 = нет цели */
+
+/* Обнаружение пола/обрыва по обучаемому эталону (не нужно знать высоту/угол).
+   Калибровка на ровном полу снимает дистанции по зонам в gTofFloorRef.
+   Дальше: зона потеряла отражение или ушла НАМНОГО дальше эталона = обрыв;
+   намного ближе = бугор/препятствие. Класс зоны — в gTofCls. */
+static int16_t gTofFloorRef[VL53L7CX_RESOLUTION_8X8]; /* эталон пола, мм; -1 = не калибрована */
+static uint8_t gTofCls[VL53L7CX_RESOLUTION_8X8];      /* 0 норма, 1 обрыв, 2 бугор */
+static bool gTofFloorCal = false;
+static uint8_t gTofFloorRes = 0;  /* разрешение на момент калибровки (сетки должны совпасть) */
+static uint8_t gTofCliffN = 0;    /* зон-обрывов в последнем кадре */
+static uint8_t gTofBumpN = 0;     /* зон-бугров */
 
 static bool xiaoTofValidMm(uint16_t mm) {
   return mm >= 20 && mm <= 3500;
@@ -218,6 +235,75 @@ static uint16_t xiaoTofFrameCenterMin() {
   return best;
 }
 
+/** Снимок текущего кадра как эталон пола. Робот должен стоять на ровном полу,
+    путь впереди свободен. Зоны без валидной цели сейчас = -1 (не мониторятся —
+    значит, при калибровке там «пол не виден», и потеря отражения не считается
+    обрывом). Возвращает число откалиброванных зон. */
+static uint8_t xiaoTofFloorCalibrate() {
+  if (!gTofOk) {
+    return 0;
+  }
+  const uint8_t zones = gTofZones;
+  for (uint8_t z = 0; z < VL53L7CX_RESOLUTION_8X8; ++z) {
+    gTofFloorRef[z] = -1;
+    gTofCls[z] = 0;
+  }
+  uint8_t n = 0;
+  for (uint8_t z = 0; z < zones; ++z) {
+    if (gTofGrid[z] > 0) {
+      gTofFloorRef[z] = gTofGrid[z];
+      n++;
+    }
+  }
+  gTofFloorRes = zones;
+  gTofFloorCal = (n > 0);
+  gTofCliffN = 0;
+  gTofBumpN = 0;
+  return n;
+}
+
+/** Классификация зон относительно эталона пола: обрыв (отражение пропало или
+    ушло намного дальше) / бугор (намного ближе). Вызывать после заполнения
+    gTofGrid в кадре. Опц. аварийный стоп привода при обрыве. */
+static void xiaoTofFloorDetect() {
+  gTofCliffN = 0;
+  gTofBumpN = 0;
+  if (!gTofFloorCal || gTofFloorRes != gTofZones) {
+    for (uint8_t z = 0; z < VL53L7CX_RESOLUTION_8X8; ++z) {
+      gTofCls[z] = 0;
+    }
+    return;
+  }
+  const uint8_t zones = gTofZones;
+  for (uint8_t z = 0; z < zones; ++z) {
+    uint8_t cls = 0;
+    const int16_t ref = gTofFloorRef[z];
+    if (ref >= 0) {  // зона видела пол при калибровке
+      const int16_t cur = gTofGrid[z];
+      const int16_t farGate = ref + static_cast<int16_t>(ref * 3 / 10);    /* +30% */
+      const int16_t nearGate = ref - static_cast<int16_t>(ref * 25 / 100); /* −25% */
+      if (cur < 0) {
+        cls = 1;  // пол «исчез» → обрыв/ступенька вниз
+      } else if (cur > farGate && (cur - ref) >= 150) {
+        cls = 1;  // намного дальше эталона → обрыв
+      } else if (cur < nearGate && (ref - cur) >= 120) {
+        cls = 2;  // намного ближе → бугор/препятствие на полу
+      }
+    }
+    gTofCls[z] = cls;
+    if (cls == 1) {
+      gTofCliffN++;
+    } else if (cls == 2) {
+      gTofBumpN++;
+    }
+  }
+#if XIAO_TOF_CLIFF_STOP
+  if (gTofCliffN >= XIAO_TOF_CLIFF_MIN) {
+    xiaoDriveStop();  // аварийный стоп при обрыве (вкл. XIAO_TOF_CLIFF_STOP)
+  }
+#endif
+}
+
 /** Авто-профиль: цель потеряна → LONG; едем с целью → FAST; стоим стабильно → BALANCED. */
 static void xiaoTofAutoEvaluate(unsigned long now) {
   if (!gTofAuto || !gTofOk) {
@@ -369,6 +455,7 @@ static inline void xiaoTofTick() {
   lastFrame = now;
 
   const uint16_t mm = xiaoTofFrameCenterMin();
+  xiaoTofFloorDetect();  // классификация обрыв/бугор по эталону пола (gTofGrid готов)
   if (!mm) {
     gTofHasTarget = false;
     gTofMm = 0;
@@ -542,6 +629,9 @@ static inline void xiaoTofAppendTelemetry(String &j, bool &comma) {
   appendS("tof_profile", xiaoTofProfileTag(gTofProfile));
   appendU("tof_auto", gTofAuto ? 1u : 0u);
   appendU("tof_res", (gTofZones == VL53L7CX_RESOLUTION_8X8) ? 8u : 4u);
+  appendU("tof_floor_cal", gTofFloorCal ? 1u : 0u);
+  appendU("tof_cliff", gTofCliffN);
+  appendU("tof_bump", gTofBumpN);
 }
 
 /** GET /tof: вся сетка зон (мм, -1 = нет цели), порядок — строками сверху вниз. */
@@ -562,6 +652,20 @@ static inline void xiaoTofGridJson(String &j) {
       j += ',';
     }
     j += gTofGrid[z];
+  }
+  /* Класс зоны для 3D-вида: 0 норма, 1 обрыв, 2 бугор. */
+  j += F("],\"floor_cal\":");
+  j += gTofFloorCal ? '1' : '0';
+  j += F(",\"cliff\":");
+  j += gTofCliffN;
+  j += F(",\"bump\":");
+  j += gTofBumpN;
+  j += F(",\"cls\":[");
+  for (uint8_t z = 0; z < zones; ++z) {
+    if (z) {
+      j += ',';
+    }
+    j += gTofCls[z];
   }
   j += F("]}");
 }
@@ -600,6 +704,9 @@ static inline uint8_t xiaoTofRunScan360(uint8_t, XiaoScanPoint *, uint8_t) {
 static inline void xiaoTofAppendTelemetry(String &, bool &) {}
 static inline void xiaoTofGridJson(String &j) {
   j = F("{\"ok\":0,\"error\":\"tof off\"}");
+}
+static inline uint8_t xiaoTofFloorCalibrate() {
+  return 0;
 }
 
 #endif

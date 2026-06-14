@@ -762,7 +762,11 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           <canvas id="tof3d" width="340" height="280" style="background:#0d1117;border-radius:8px;border:1px solid #30363d;touch-action:none;cursor:grab"></canvas>
           <div id="radarDist" style="text-align:center;font-size:0.85rem;color:#8b9cb3;margin-top:6px">—</div>
           <div style="font-size:0.75rem;color:#8b9cb3;margin-top:4px">Профиль: <span id="tofProfile">—</span> · сетка <span id="tofRes">—</span> · замеров: <span id="tofCount">0</span></div>
-          <div style="font-size:0.7rem;color:#6b7785;margin-top:2px">3D-глубина, что видит сенсор · тяни мышью повернуть · ближе = красный, дальше = синий</div>
+          <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button type="button" id="btnFloorCal">Калибровать пол</button>
+            <span id="floorInfo" style="font-size:0.75rem;color:#8b9cb3">пол: не калиброван</span>
+          </div>
+          <div style="font-size:0.7rem;color:#6b7785;margin-top:2px">3D-глубина · тяни мышью · ближе=красный, дальше=синий · <span style="color:#ff2fd0">обрыв</span> · <span style="color:#ff9a3d">бугор</span>. Калибровка: поставь робота на ровный пол, путь свободен.</div>
         </div>
         <div>
           <div id="joy" style="width:168px;height:168px;border-radius:50%;background:#1c2738;border:2px solid #30363d;position:relative;touch-action:none">
@@ -970,7 +974,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
     // Сенсор в начале координат, смотрит вперёд +Z, вверх +Y. FoV ~64° на ось (90° по диагонали).
     const TOF3D = {{ fovDeg: 64, maxMm: 2000, yaw: 0.7, pitch: 0.42, autoYaw: 0.0045,
                      drag: false, lastX: 0, lastY: 0, lastInput: 0 }};
-    let tofGrid = null, tofSide = 0;
+    let tofGrid = null, tofSide = 0, tofCls = null;
 
     function tofColor(mm, alpha) {{
       const t = Math.max(0, Math.min(1, (mm - 150) / (TOF3D.maxMm - 150)));
@@ -1029,7 +1033,8 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           const mm = tofGrid[r*side+c];
           if (mm == null || mm < 20) {{ proj[r].push(null); continue; }}
           const pr = tofProject(tofZonePoint(r, c, side, Math.min(mm, TOF3D.maxMm*1.25)));
-          proj[r].push(pr ? {{ sx: pr.sx, sy: pr.sy, depth: pr.depth, mm: mm }} : null);
+          const cls = (tofCls && tofCls.length === side*side) ? tofCls[r*side+c] : 0;
+          proj[r].push(pr ? {{ sx: pr.sx, sy: pr.sy, depth: pr.depth, mm: mm, cls: cls }} : null);
         }}
       }}
       // меш-квадраты, back→front
@@ -1046,12 +1051,16 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
         ctx.fillStyle = tofColor(q.mm, 0.5); ctx.fill();
         ctx.strokeStyle = "rgba(255,255,255,0.10)"; ctx.lineWidth = 1; ctx.stroke();
       }});
-      // точки зон поверх
+      // точки зон поверх; обрыв=малиновый, бугор=оранжевый, иначе по дистанции
       for (let r=0; r<side; r++) for (let c=0; c<side; c++) {{
         const p = proj[r][c]; if (!p) continue;
-        const rad = Math.max(2.5, 7 - (p.depth - 2200) / 500);
+        const special = (p.cls === 1 || p.cls === 2);
+        const rad = special ? Math.max(4, 9 - (p.depth - 2200) / 500)
+                            : Math.max(2.5, 7 - (p.depth - 2200) / 500);
         ctx.beginPath(); ctx.arc(cx+p.sx, cy+p.sy, rad, 0, Math.PI*2);
-        ctx.fillStyle = tofColor(p.mm, 1); ctx.fill();
+        ctx.fillStyle = p.cls === 1 ? "#ff2fd0" : p.cls === 2 ? "#ff9a3d" : tofColor(p.mm, 1);
+        ctx.fill();
+        if (special) {{ ctx.lineWidth = 1.5; ctx.strokeStyle = "#ffffff"; ctx.stroke(); }}
       }}
     }}
     function tof3dLoop() {{
@@ -1070,7 +1079,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
     }}
     async function tofPoll() {{
-      try {{ const g = await boardFetch("tof", 2000); if (g && g.grid && g.res) {{ tofGrid = g.grid; tofSide = g.res; }} }} catch (e) {{}}
+      try {{ const g = await boardFetch("tof", 2000); if (g && g.grid && g.res) {{ tofGrid = g.grid; tofSide = g.res; tofCls = g.cls || null; }} }} catch (e) {{}}
       setTimeout(tofPoll, 220);
     }}
     function updateRobotTof(j) {{
@@ -1082,6 +1091,11 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       if (elC) elC.textContent = j.tof_count ?? 0;
       if (elR) elR.textContent = j.tof_res ? (j.tof_res + "×" + j.tof_res) : "—";
       if (elD) elD.textContent = tofIsValid(j) ? ("ближайшее: " + j.tof_mm + " мм") : "нет цели";
+      const elF = document.getElementById("floorInfo");
+      if (elF) {{
+        if (j.tof_floor_cal) elF.textContent = "пол: откалиброван · обрывов " + (j.tof_cliff ?? 0) + " · бугров " + (j.tof_bump ?? 0);
+        else elF.textContent = "пол: не калиброван";
+      }}
     }}
     if (document.getElementById("tof3d")) {{ tof3dBindInput(); requestAnimationFrame(tof3dLoop); tofPoll(); }}
     const MAP_W = 80, MAP_H = 80, CELL_MM = 50, ROBOT_CX = 40, ROBOT_CY = 40;
@@ -1189,6 +1203,17 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
     }};
     const btnMapClr = document.getElementById("btnMapClear");
     if (btnMapClr) btnMapClr.onclick = () => {{ mapLog.fill(0); drawMapGrid(); }};
+    const btnFloor = document.getElementById("btnFloorCal");
+    if (btnFloor) btnFloor.onclick = async () => {{
+      btnFloor.disabled = true;
+      const elF = document.getElementById("floorInfo");
+      if (elF) elF.textContent = "пол: калибрую…";
+      try {{
+        const r = await boardFetch("floorcal", 4000);
+        if (elF) elF.textContent = (r && r.ok) ? ("пол: откалиброван (" + r.zones + " зон)") : "пол: калибровка не удалась (нет валидных зон)";
+      }} catch (e) {{ if (elF) elF.textContent = "пол: ошибка " + e; }}
+      finally {{ btnFloor.disabled = false; }}
+    }};
     drawMapGrid();
     document.getElementById("btnRobotStop")?.addEventListener("click", () => boardFetch("drive?stop=1", 3000));
     document.getElementById("btnBeep")?.addEventListener("click", () => boardFetch("beep?hz=880&ms=250&ch=A&gain=" + gainV(), 5000));
@@ -1638,6 +1663,8 @@ def _run_http_mode(
                         board_path = "melody" + ("?" + qs if qs else "")
                     elif sub.startswith("status"):
                         board_path = "status"
+                    elif sub.startswith("floorcal"):
+                        board_path = "floorcal"  # калибровка эталона пола
                     elif sub.startswith("tof"):
                         board_path = "tof"  # сетка зон для 3D-вида
                     else:
