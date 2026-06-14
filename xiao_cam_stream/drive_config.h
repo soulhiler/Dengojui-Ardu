@@ -55,6 +55,10 @@
 #define XIAO_TOF_LPN_PIN 7
 /** I2C_RST (есть не на всех breakout): -1 = не подключён. */
 #define XIAO_TOF_I2C_RST_PIN -1
+/** Порог шума зоны: range_sigma_mm выше — зона отбрасывается (мм). 0 — выкл
+ *  фильтр. Меньше = строже (меньше ложных близких), больше = терпимее к
+ *  дальним/тёмным целям. 15 — разумный старт. */
+#define XIAO_TOF_SIGMA_MAX_MM 15
 
 /** Звук через обмотки TB6612 (как uno_motor_test). */
 #define XIAO_AUDIO_ENABLE 1
