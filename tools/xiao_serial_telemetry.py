@@ -46,6 +46,8 @@ try:
     from tof_cloud import CloudConfig, PointCloud, Pose  # noqa: E402
     from build_model import add_frame  # noqa: E402  (есть __main__-guard, main не запускается)
     from xiao_client import fetch_frame  # noqa: E402
+    from world_model import WorldModel  # noqa: E402
+    from world_service import WorldService  # noqa: E402
     _HAVE_SPATIAL = True
 except Exception:
     _HAVE_SPATIAL = False
@@ -55,6 +57,12 @@ _CLOUD = {
     "pc": PointCloud(voxel_m=0.03) if _HAVE_SPATIAL else None,
     "cfg": CloudConfig() if _HAVE_SPATIAL else None,
 }
+
+# Автономная персистентная модель пространства (сервис стартует в _run_http_mode).
+_WORLD = WorldModel(voxel_m=0.05) if _HAVE_SPATIAL else None
+_WORLD_SVC = None  # WorldService — создаётся при старте HTTP
+_WORLD_PATH = os.path.join(_SPATIAL_DIR, "world", "room.world.gz")
+_WORLD_SESSIONS = os.path.join(_SPATIAL_DIR, "sessions")
 
 LAST_USB: dict = {}
 LAST_WIFI: dict = {}
@@ -822,21 +830,24 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       </div>
     </div>
     <div id="cloudCard" class="card" style="margin-bottom:12px">
-      <h2>Облако точек (камера + ToF)</h2>
-      <p class="hint" style="margin:0 0 8px">Построенная 3D-модель из кадров камеры+ToF (этап 1, модуль <code>spatial/</code>). «Снять кадр» добавляет цветные точки текущего вида; накопление воксельное. Поверни робота между кадрами и задай yaw для кругового скана.</p>
+      <h2>Модель пространства (камера + ToF, авто)</h2>
+      <p class="hint" style="margin:0 0 8px">Система <b>сама</b> копит модель: фоновый сервис непрерывно вливает кадры камеры+ToF, уверенность вокселей растёт от повторных наблюдений, модель сохраняется на диск и переживает рестарт (<code>spatial/world_*</code>). Поза — best-effort (одометрия по энкодерам когда разведём, ручной yaw для скана).</p>
       <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
         <canvas id="cloud3d" width="420" height="320" style="background:#0d1117;border-radius:8px;border:1px solid #30363d;touch-action:none;cursor:grab"></canvas>
-        <div style="min-width:170px">
+        <div style="min-width:190px">
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <button type="button" id="btnCloudCap">Снять кадр</button>
-            <button type="button" id="btnCloudClear">Очистить</button>
+            <button type="button" id="btnWorldPause">Пауза</button>
+            <button type="button" id="btnWorldSave">Сохранить</button>
+            <button type="button" id="btnWorldClear">Очистить</button>
           </div>
-          <div style="margin-top:8px;font-size:0.8rem;color:#8b9cb3">yaw кадра, °:
-            <input type="number" id="cloudYaw" value="0" step="15" style="width:64px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:2px 4px"></div>
-          <div style="margin-top:6px;font-size:0.8rem;color:#8b9cb3">точек: <span id="cloudCount">0</span></div>
+          <div style="margin-top:8px;font-size:0.8rem;color:#8b9cb3">ручной yaw, °:
+            <input type="number" id="cloudYaw" value="0" step="15" style="width:64px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:2px 4px">
+            <button type="button" id="btnWorldYaw">→</button></div>
+          <div style="margin-top:6px;font-size:0.8rem;color:#8b9cb3">вокселей: <span id="cloudCount">0</span> · уверенных: <span id="worldConf">0</span></div>
           <div id="cloudStatus" style="margin-top:4px;font-size:0.75rem;color:#8b9cb3">—</div>
-          <div style="margin-top:8px"><a id="cloudPly" href="/cloud/ply" download="room.ply" style="font-size:0.8rem;color:#58a6ff">Скачать PLY</a></div>
-          <div style="margin-top:6px;font-size:0.7rem;color:#6b7785">тяни мышью — повернуть · колесо — масштаб</div>
+          <div id="worldPose" style="margin-top:2px;font-size:0.72rem;color:#6b7785">поза: —</div>
+          <div style="margin-top:8px"><a id="cloudPly" href="/world/ply" download="world.ply" style="font-size:0.8rem;color:#58a6ff">Скачать PLY</a></div>
+          <div style="margin-top:6px;font-size:0.7rem;color:#6b7785">тяни мышью — повернуть · колесо — масштаб · обновляется само</div>
         </div>
       </div>
     </div>
@@ -1260,7 +1271,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
     document.getElementById("btnSayPrivet")?.addEventListener("click", () => boardFetch("melody?id=9&ch=A&gain=" + gainV(), 15000));
     document.getElementById("btnMelStop")?.addEventListener("click", () => boardFetch("melody?id=0", 3000));
 
-    // ===== 3D-визуализатор накопленного облака точек (камера+ToF) =====
+    // ===== 3D-визуализатор АВТО-модели пространства (камера+ToF, /world) =====
     (function() {{
       const cv = document.getElementById("cloud3d");
       if (!cv) return;
@@ -1271,6 +1282,10 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       let drag = false, lx = 0, ly = 0;
       const statusEl = document.getElementById("cloudStatus");
       const countEl = document.getElementById("cloudCount");
+      const confEl = document.getElementById("worldConf");
+      const poseEl = document.getElementById("worldPose");
+      const bPause = document.getElementById("btnWorldPause");
+      let paused = false;
       function autofit() {{
         if (!pts.length) return;
         let mnx=1e9,mxx=-1e9,mny=1e9,mxy=-1e9,mnz=1e9,mxz=-1e9;
@@ -1282,7 +1297,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       function draw() {{
         ctx.fillStyle = "#0d1117"; ctx.fillRect(0,0,cv.width,cv.height);
         const cx = cv.width/2, cy = cv.height/2;
-        if (!pts.length) {{ ctx.fillStyle="#6b7785"; ctx.font="13px sans-serif"; ctx.fillText("нет точек — нажми «Снять кадр»", 20, cy); return; }}
+        if (!pts.length) {{ ctx.fillStyle="#6b7785"; ctx.font="13px sans-serif"; ctx.fillText("модель пуста — система копит по мере наблюдений", 14, cy); return; }}
         const cyaw=Math.cos(yaw), syaw=Math.sin(yaw), cpit=Math.cos(pitch), spit=Math.sin(pitch);
         const s = scl*zoom;
         const proj = [];
@@ -1301,27 +1316,39 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           ctx.fillStyle = "rgb("+q[3]+","+q[4]+","+q[5]+")"; ctx.fill();
         }}
       }}
-      async function refresh() {{
-        try {{ const r = await fetch("/cloud/data?_ts="+Date.now(), {{cache:"no-store"}}); const j = await r.json();
-          if (j.ok) {{ pts = j.points || []; if (countEl) countEl.textContent = j.count; autofit(); draw(); }} }} catch(e) {{}}
+      async function pollData() {{
+        try {{ const r = await fetch("/world/data?_ts="+Date.now(), {{cache:"no-store"}}); const j = await r.json();
+          if (j.ok) {{ const had=pts.length; pts = j.points || []; if (!had && pts.length) autofit(); draw(); }} }} catch(e) {{}}
+      }}
+      async function pollStatus() {{
+        try {{ const r = await fetch("/world/status?_ts="+Date.now(), {{cache:"no-store"}}); const j = await r.json();
+          if (!j.ok) return;
+          if (countEl) countEl.textContent = j.voxels ?? 0;
+          if (confEl) confEl.textContent = j.confident ?? 0;
+          paused = !!j.paused;
+          if (bPause) bPause.textContent = paused ? "Продолжить" : "Пауза";
+          if (statusEl) {{
+            const run = j.running ? (paused ? "пауза" : "копит") : "стоп";
+            const age = (j.age_s!=null) ? (", кадр "+j.age_s+"с назад") : "";
+            const err = j.last_error ? (" · "+j.last_error) : "";
+            statusEl.textContent = run + " · кадров " + (j.frames??0) + age + err;
+          }}
+          if (poseEl && j.pose) poseEl.textContent = "поза: x="+j.pose[0]+" z="+j.pose[1]+" yaw="+j.pose[2]+(j.have_odom?" (одометрия)":" (без одометрии)");
+        }} catch(e) {{}}
       }}
       cv.addEventListener("pointerdown", e => {{ drag=true; lx=e.clientX; ly=e.clientY; try {{ cv.setPointerCapture(e.pointerId); }} catch(_){{}} }});
       cv.addEventListener("pointermove", e => {{ if(!drag) return; yaw += (e.clientX-lx)*0.01; pitch += (e.clientY-ly)*0.01; pitch=Math.max(-1.4,Math.min(1.4,pitch)); lx=e.clientX; ly=e.clientY; draw(); }});
       cv.addEventListener("pointerup", () => {{ drag=false; }});
       cv.addEventListener("wheel", e => {{ e.preventDefault(); zoom *= (e.deltaY<0?1.12:0.89); zoom=Math.max(0.2,Math.min(6,zoom)); draw(); }}, {{passive:false}});
-      const bCap = document.getElementById("btnCloudCap");
-      if (bCap) bCap.onclick = async () => {{
-        bCap.disabled=true; if(statusEl) statusEl.textContent="снимаю кадр…";
-        try {{ const y = parseFloat(document.getElementById("cloudYaw").value)||0;
-          const r = await fetch("/cloud/capture?yaw="+y+"&_ts="+Date.now(), {{cache:"no-store"}}); const j = await r.json();
-          if (statusEl) statusEl.textContent = j.ok ? ("+"+j.added+" точек (res "+(j.res||"?")+")") : ("ошибка: "+(j.error||"?"));
-          await refresh();
-        }} catch(e) {{ if(statusEl) statusEl.textContent="ошибка: "+e; }}
-        finally {{ bCap.disabled=false; }}
-      }};
-      const bClr = document.getElementById("btnCloudClear");
-      if (bClr) bClr.onclick = async () => {{ try {{ await fetch("/cloud/clear?_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} pts=[]; if(countEl) countEl.textContent="0"; if(statusEl) statusEl.textContent="очищено"; draw(); }};
-      draw(); refresh();
+      if (bPause) bPause.onclick = async () => {{ try {{ await fetch("/world/pause?on="+(paused?"0":"1")+"&_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} pollStatus(); }};
+      const bSave = document.getElementById("btnWorldSave");
+      if (bSave) bSave.onclick = async () => {{ if(statusEl) statusEl.textContent="сохраняю…"; try {{ const r=await fetch("/world/save?_ts="+Date.now(), {{cache:"no-store"}}); const j=await r.json(); if(statusEl) statusEl.textContent="сохранено "+(j.saved??0)+" вокселей"; }} catch(e) {{ if(statusEl) statusEl.textContent="ошибка сохранения"; }} }};
+      const bClr = document.getElementById("btnWorldClear");
+      if (bClr) bClr.onclick = async () => {{ if(!confirm("Очистить накопленную модель пространства?")) return; try {{ await fetch("/world/clear?_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} pts=[]; if(countEl) countEl.textContent="0"; if(confEl) confEl.textContent="0"; draw(); }};
+      const bYaw = document.getElementById("btnWorldYaw");
+      if (bYaw) bYaw.onclick = async () => {{ const y=parseFloat(document.getElementById("cloudYaw").value)||0; try {{ await fetch("/world/yaw?deg="+y+"&_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} if(statusEl) statusEl.textContent="ручной yaw → "+y+"°"; }};
+      draw(); pollStatus(); pollData();
+      setInterval(function() {{ if (!document.hidden) {{ pollStatus(); pollData(); }} }}, 2500);
     }})();
 
     function render(obj) {{
@@ -1617,6 +1644,26 @@ def _run_http_mode(
     if start_ble:
         threading.Thread(target=_ble_reader_thread, args=(ble_name, ble_char_uuid), daemon=True).start()
 
+    # Автономный построитель модели пространства: грузим сохранённую модель и
+    # запускаем фоновый ingest (камера+ToF+телеметрия -> WorldModel -> диск).
+    global _WORLD_SVC
+    if _HAVE_SPATIAL and _WORLD is not None:
+        try:
+            loaded = _WORLD.load(_WORLD_PATH)
+            if loaded:
+                sys.stderr.write("world: загружена модель %d вокселей из %s\n" % (loaded, _WORLD_PATH))
+        except Exception as e:
+            sys.stderr.write("world: не удалось загрузить модель: %r\n" % e)
+        _WORLD_SVC = WorldService(
+            _WORLD,
+            get_ip=lambda: _board_ip_for_control(port, baud),
+            world_path=_WORLD_PATH,
+            sessions_dir=_WORLD_SESSIONS,
+            interval_s=2.0,
+        )
+        _WORLD_SVC.start()
+        sys.stderr.write("world: автономный сервис модели пространства запущен (интервал 2с)\n")
+
     parts: list[str] = []
     if start_wifi:
         parts.append(WIFI_GROUP_LABEL)
@@ -1738,6 +1785,105 @@ def _run_http_mode(
                         self.send_header("Connection", "close")
                         self.end_headers()
                         self.wfile.write(data)
+                elif path.startswith("/world/"):
+                    # Автономная персистентная модель пространства (сервис копит сам).
+                    from urllib.parse import parse_qsl
+
+                    def _wjson(obj, code=200):
+                        b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+                        self.send_response(code)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(b)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(b)
+
+                    def _wq(name, default=None):
+                        if "?" in self.path:
+                            for k, v in parse_qsl(self.path.split("?", 1)[1]):
+                                if k == name:
+                                    return v
+                        return default
+
+                    if not _HAVE_SPATIAL or _WORLD is None:
+                        _wjson({"ok": 0, "error": "spatial unavailable"}, 503)
+                        return
+                    svc = _WORLD_SVC
+                    wlock = svc.lock if svc else None
+                    wsub = path[7:]
+                    if wsub.startswith("status"):
+                        st = svc.status() if svc else _WORLD.stats()
+                        st["ok"] = 1
+                        _wjson(st)
+                    elif wsub.startswith("data"):
+                        if wlock:
+                            wlock.acquire()
+                        try:
+                            pts = _WORLD.confident_points(cap=8000)
+                        finally:
+                            if wlock:
+                                wlock.release()
+                        arr = [[round(p[0], 3), round(p[1], 3), round(p[2], 3), p[3], p[4], p[5]] for p in pts]
+                        _wjson({"ok": 1, "count": len(arr), "points": arr})
+                    elif wsub.startswith("pause"):
+                        on = (_wq("on", "1") not in ("0", "false", ""))
+                        if svc:
+                            svc.set_paused(on)
+                        _wjson({"ok": 1, "paused": (svc.paused if svc else None)})
+                    elif wsub.startswith("yaw"):
+                        try:
+                            deg = float(_wq("deg", "0") or 0)
+                        except ValueError:
+                            deg = 0.0
+                        if svc:
+                            svc.pose.manual_yaw_deg = deg
+                        _wjson({"ok": 1, "yaw_deg": deg})
+                    elif wsub.startswith("save"):
+                        if wlock:
+                            wlock.acquire()
+                        try:
+                            n = _WORLD.save(_WORLD_PATH)
+                        finally:
+                            if wlock:
+                                wlock.release()
+                        _wjson({"ok": 1, "saved": n})
+                    elif wsub.startswith("clear"):
+                        if wlock:
+                            wlock.acquire()
+                        try:
+                            _WORLD.clear()
+                            _WORLD.save(_WORLD_PATH)
+                        finally:
+                            if wlock:
+                                wlock.release()
+                        _wjson({"ok": 1, "total": 0})
+                    elif wsub.startswith("ply"):
+                        if wlock:
+                            wlock.acquire()
+                        try:
+                            rows = _WORLD.confident_points(cap=10 ** 9)
+                        finally:
+                            if wlock:
+                                wlock.release()
+                        out = ["ply", "format ascii 1.0", "element vertex %d" % len(rows),
+                               "property float x", "property float y", "property float z",
+                               "property uchar red", "property uchar green", "property uchar blue",
+                               "end_header"]
+                        for x, y, z, r, g, b, _lo in rows:
+                            out.append("%.4f %.4f %.4f %d %d %d" % (x, y, z, int(r), int(g), int(b)))
+                        body = ("\n".join(out) + "\n").encode("ascii")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/octet-stream")
+                        self.send_header("Content-Disposition", 'attachment; filename="world.ply"')
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_error(404)
                 elif path.startswith("/cloud/"):
                     # Накопленное цветное облако точек (камера+ToF) для 3D-визуализатора.
                     from urllib.parse import parse_qsl
