@@ -49,8 +49,10 @@
 #define XIAO_TOF_ENABLE 1
 #define XIAO_TOF_SDA 8
 #define XIAO_TOF_SCL 9
-/** LPn модуля: -1 = перемычка на 3.3 V; иначе номер GPIO (например 7 = D8). */
-#define XIAO_TOF_LPN_PIN -1
+/** LPn модуля: -1 = перемычка на 3.3 V; иначе номер GPIO (например 7 = D8).
+ *  7 = D8 (GPIO7) — управляемый LPn: аппаратный сброс сенсора и recovery
+ *  зависшей шины I2C тоглом LOW→HIGH (см. xiao_tof.h). Перемычку LPn–3V3 снять. */
+#define XIAO_TOF_LPN_PIN 7
 /** I2C_RST (есть не на всех breakout): -1 = не подключён. */
 #define XIAO_TOF_I2C_RST_PIN -1
 
