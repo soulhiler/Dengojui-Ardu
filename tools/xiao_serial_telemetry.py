@@ -847,7 +847,12 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           <div id="cloudStatus" style="margin-top:4px;font-size:0.75rem;color:#8b9cb3">—</div>
           <div id="worldPose" style="margin-top:2px;font-size:0.72rem;color:#6b7785">поза: —</div>
           <div style="margin-top:8px"><a id="cloudPly" href="/world/ply" download="world.ply" style="font-size:0.8rem;color:#58a6ff">Скачать PLY</a></div>
-          <div style="margin-top:6px;font-size:0.7rem;color:#6b7785">тяни мышью — повернуть · колесо — масштаб · обновляется само</div>
+          <div style="margin-top:6px;font-size:0.7rem;color:#6b7785">тяни мышью — повернуть · колесо — масштаб · ярче = увереннее · обновляется само</div>
+        </div>
+        <div>
+          <div style="font-size:0.75rem;color:#8b9cb3;margin-bottom:4px">вид сверху (карта для ориентации)</div>
+          <canvas id="worldTop" width="220" height="220" style="background:#0d1117;border-radius:8px;border:1px solid #30363d"></canvas>
+          <div style="font-size:0.7rem;color:#6b7785;margin-top:4px">робот ▲ в центре смотрит вверх · занято = ярче · сетка 0.5 м</div>
         </div>
       </div>
     </div>
@@ -1300,20 +1305,44 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
         if (!pts.length) {{ ctx.fillStyle="#6b7785"; ctx.font="13px sans-serif"; ctx.fillText("модель пуста — система копит по мере наблюдений", 14, cy); return; }}
         const cyaw=Math.cos(yaw), syaw=Math.sin(yaw), cpit=Math.cos(pitch), spit=Math.sin(pitch);
         const s = scl*zoom;
-        const proj = [];
-        for (const p of pts) {{
-          const x=(p[0]-cxw), y=(p[1]-cyw), z=(p[2]-czw);
+        function P(x, y, z) {{
           const x1 = cyaw*x + syaw*z, z1 = -syaw*x + cyaw*z, y1 = y;
           const y2 = cpit*y1 - spit*z1, z2 = spit*y1 + cpit*z1;
           const depth = z2 + 6.0;
-          if (depth <= 0.1) continue;
-          proj.push([cx + x1*s, cy - y2*s, depth, p[3], p[4], p[5]]);
+          if (depth <= 0.1) return null;
+          return [cx + x1*s, cy - y2*s, depth];
+        }}
+        // сетка пола (опорная плоскость на уровне нижних точек) — чтобы читалось пространство
+        let mny=1e9; for (const p of pts) mny=Math.min(mny,p[1]);
+        const floor = mny - cyw, half = 1.5;
+        ctx.strokeStyle="rgba(120,140,170,0.16)"; ctx.lineWidth=1;
+        for (let g=-half; g<=half+1e-6; g+=0.5) {{
+          const a=P(g,floor,-half), b=P(g,floor,half);
+          if (a&&b) {{ ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke(); }}
+          const c2=P(-half,floor,g), d=P(half,floor,g);
+          if (c2&&d) {{ ctx.beginPath(); ctx.moveTo(c2[0],c2[1]); ctx.lineTo(d[0],d[1]); ctx.stroke(); }}
+        }}
+        // точки с затенением по уверенности (log-odds в p[6])
+        const proj = [];
+        for (const p of pts) {{
+          const pr = P(p[0]-cxw, p[1]-cyw, p[2]-czw);
+          if (!pr) continue;
+          proj.push([pr[0], pr[1], pr[2], p[3], p[4], p[5], (p.length>6?p[6]:2.0)]);
         }}
         proj.sort((a,b)=>b[2]-a[2]);
         for (const q of proj) {{
-          const rad = Math.max(1.2, 3.2 - (q[2]-6)/3);
+          const conf = Math.max(0, Math.min(1, (q[6]-0.85)/3.0));
+          ctx.globalAlpha = 0.4 + 0.6*conf;
+          const rad = Math.max(1.2, (2.3 + 1.5*conf) - (q[2]-6)/3);
           ctx.beginPath(); ctx.arc(q[0], q[1], rad, 0, Math.PI*2);
           ctx.fillStyle = "rgb("+q[3]+","+q[4]+","+q[5]+")"; ctx.fill();
+        }}
+        ctx.globalAlpha = 1;
+        // маркер робота в начале координат (0,0,0) + направление вперёд (+z)
+        const o = P(-cxw, -cyw, -czw), fwd = P(-cxw, -cyw, 0.4-czw);
+        if (o) {{
+          if (fwd) {{ ctx.strokeStyle="#5cadff"; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(o[0],o[1]); ctx.lineTo(fwd[0],fwd[1]); ctx.stroke(); }}
+          ctx.fillStyle="#0e639c"; ctx.beginPath(); ctx.arc(o[0],o[1],5,0,Math.PI*2); ctx.fill();
         }}
       }}
       async function pollData() {{
@@ -1347,8 +1376,34 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       if (bClr) bClr.onclick = async () => {{ if(!confirm("Очистить накопленную модель пространства?")) return; try {{ await fetch("/world/clear?_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} pts=[]; if(countEl) countEl.textContent="0"; if(confEl) confEl.textContent="0"; draw(); }};
       const bYaw = document.getElementById("btnWorldYaw");
       if (bYaw) bYaw.onclick = async () => {{ const y=parseFloat(document.getElementById("cloudYaw").value)||0; try {{ await fetch("/world/yaw?deg="+y+"&_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} if(statusEl) statusEl.textContent="ручной yaw → "+y+"°"; }};
-      draw(); pollStatus(); pollData();
-      setInterval(function() {{ if (!document.hidden) {{ pollStatus(); pollData(); }} }}, 2500);
+      // вид сверху (occupancy) — карта для ориентации: x вправо, z вперёд (вверх)
+      const top = document.getElementById("worldTop");
+      const tctx = top ? top.getContext("2d") : null;
+      function drawTop(cells, cellM) {{
+        if (!tctx) return;
+        const W=top.width, H=top.height, cx=W/2, cy=H/2, range=3.0, ppm=(Math.min(W,H)/2)/range;
+        tctx.fillStyle="#0d1117"; tctx.fillRect(0,0,W,H);
+        tctx.strokeStyle="rgba(120,140,170,0.15)"; tctx.lineWidth=1;
+        for (let g=-range; g<=range+1e-6; g+=0.5) {{
+          const sx=cx+g*ppm, sy=cy+g*ppm;
+          tctx.beginPath(); tctx.moveTo(sx,0); tctx.lineTo(sx,H); tctx.stroke();
+          tctx.beginPath(); tctx.moveTo(0,sy); tctx.lineTo(W,sy); tctx.stroke();
+        }}
+        for (const c of (cells||[])) {{
+          const wx=c[0]*cellM, wz=c[1]*cellM, conf=Math.max(0,Math.min(1,(c[2]-0.85)/3.0));
+          const sx=cx+wx*ppm, sy=cy-wz*ppm, sz=Math.max(2, cellM*ppm);
+          tctx.fillStyle="rgba("+Math.round(90+165*conf)+","+Math.round(120+50*conf)+",70,"+(0.45+0.55*conf)+")";
+          tctx.fillRect(sx-sz/2, sy-sz/2, sz, sz);
+        }}
+        tctx.fillStyle="#5cadff"; tctx.beginPath();
+        tctx.moveTo(cx, cy-7); tctx.lineTo(cx-5, cy+5); tctx.lineTo(cx+5, cy+5); tctx.closePath(); tctx.fill();
+      }}
+      async function pollOccupancy() {{
+        try {{ const r=await fetch("/world/occupancy?_ts="+Date.now(), {{cache:"no-store"}}); const j=await r.json();
+          if (j.ok) drawTop(j.cells, j.cell_m); }} catch(e) {{}}
+      }}
+      draw(); pollStatus(); pollData(); pollOccupancy();
+      setInterval(function() {{ if (!document.hidden) {{ pollStatus(); pollData(); pollOccupancy(); }} }}, 2500);
     }})();
 
     function render(obj) {{
@@ -1825,8 +1880,20 @@ def _run_http_mode(
                         finally:
                             if wlock:
                                 wlock.release()
-                        arr = [[round(p[0], 3), round(p[1], 3), round(p[2], 3), p[3], p[4], p[5]] for p in pts]
+                        # 7-й элемент — log-odds (уверенность зоны) для затенения в 3D.
+                        arr = [[round(p[0], 3), round(p[1], 3), round(p[2], 3), p[3], p[4], p[5], round(p[6], 2)]
+                               for p in pts]
                         _wjson({"ok": 1, "count": len(arr), "points": arr})
+                    elif wsub.startswith("occupancy"):
+                        if wlock:
+                            wlock.acquire()
+                        try:
+                            grid = _WORLD.occupancy_2d(cell_m=0.10)
+                        finally:
+                            if wlock:
+                                wlock.release()
+                        cells = [[gx, gz, round(lo, 2)] for (gx, gz), lo in grid.items()]
+                        _wjson({"ok": 1, "cell_m": 0.10, "count": len(cells), "cells": cells})
                     elif wsub.startswith("pause"):
                         on = (_wq("on", "1") not in ("0", "false", ""))
                         if svc:
