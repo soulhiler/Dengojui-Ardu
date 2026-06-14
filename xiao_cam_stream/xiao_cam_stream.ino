@@ -79,8 +79,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 21u;
-static constexpr char kXiaoFwVersion[] = "1.3.5";
+static constexpr uint32_t kXiaoFwBuild = 22u;
+static constexpr char kXiaoFwVersion[] = "1.3.6";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -1248,6 +1248,19 @@ static void handleTofGrid() {
   server.send(200, F("application/json; charset=utf-8"), j);
 }
 
+/** GET /floorcal: снять эталон пола (робот на ровном полу, путь свободен). */
+static void handleTofFloorCal() {
+  const uint8_t n = xiaoTofFloorCalibrate();
+  String j = F("{\"ok\":");
+  j += (n > 0) ? '1' : '0';
+  j += F(",\"zones\":");
+  j += n;
+  j += '}';
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(200, F("application/json; charset=utf-8"), j);
+}
+
 /** esp32-arduino 3.3: нет WiFi.disconnectReason() — берём reason из системного события. */
 static void wifiOnArduinoEvent(arduino_event_id_t event, arduino_event_info_t info) {
   if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
@@ -1400,6 +1413,7 @@ void setup() {
   server.on("/telemetry", HTTP_GET, handleTelemetry);
   server.on("/control", HTTP_GET, handleControl);
   server.on("/tof", HTTP_GET, handleTofGrid);
+  server.on("/floorcal", HTTP_GET, handleTofFloorCal);
 #if XIAO_DRIVE_ENABLE
   server.on("/drive", HTTP_GET, handleDrive);
   server.on("/status", HTTP_GET, handleRobotStatus);
