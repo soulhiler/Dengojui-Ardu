@@ -36,6 +36,26 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# --- spatial: накопленное цветное облако (камера+ToF) для 3D-визуализатора ---
+# Переиспользуем геометрию модуля spatial/ (та же, что в build_model.py CLI).
+_SPATIAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "spatial")
+if os.path.isdir(_SPATIAL_DIR) and _SPATIAL_DIR not in sys.path:
+    sys.path.insert(0, _SPATIAL_DIR)
+try:
+    import math as _math
+    from tof_cloud import CloudConfig, PointCloud, Pose  # noqa: E402
+    from build_model import add_frame  # noqa: E402  (есть __main__-guard, main не запускается)
+    from xiao_client import fetch_frame  # noqa: E402
+    _HAVE_SPATIAL = True
+except Exception:
+    _HAVE_SPATIAL = False
+
+_CLOUD_LOCK = threading.Lock()
+_CLOUD = {
+    "pc": PointCloud(voxel_m=0.03) if _HAVE_SPATIAL else None,
+    "cfg": CloudConfig() if _HAVE_SPATIAL else None,
+}
+
 LAST_USB: dict = {}
 LAST_WIFI: dict = {}
 LAST_BLE: dict = {}
@@ -801,6 +821,25 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
         <button type="button" id="btnMelStop">Стоп звук</button>
       </div>
     </div>
+    <div id="cloudCard" class="card" style="margin-bottom:12px">
+      <h2>Облако точек (камера + ToF)</h2>
+      <p class="hint" style="margin:0 0 8px">Построенная 3D-модель из кадров камеры+ToF (этап 1, модуль <code>spatial/</code>). «Снять кадр» добавляет цветные точки текущего вида; накопление воксельное. Поверни робота между кадрами и задай yaw для кругового скана.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+        <canvas id="cloud3d" width="420" height="320" style="background:#0d1117;border-radius:8px;border:1px solid #30363d;touch-action:none;cursor:grab"></canvas>
+        <div style="min-width:170px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button type="button" id="btnCloudCap">Снять кадр</button>
+            <button type="button" id="btnCloudClear">Очистить</button>
+          </div>
+          <div style="margin-top:8px;font-size:0.8rem;color:#8b9cb3">yaw кадра, °:
+            <input type="number" id="cloudYaw" value="0" step="15" style="width:64px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:2px 4px"></div>
+          <div style="margin-top:6px;font-size:0.8rem;color:#8b9cb3">точек: <span id="cloudCount">0</span></div>
+          <div id="cloudStatus" style="margin-top:4px;font-size:0.75rem;color:#8b9cb3">—</div>
+          <div style="margin-top:8px"><a id="cloudPly" href="/cloud/ply" download="room.ply" style="font-size:0.8rem;color:#58a6ff">Скачать PLY</a></div>
+          <div style="margin-top:6px;font-size:0.7rem;color:#6b7785">тяни мышью — повернуть · колесо — масштаб</div>
+        </div>
+      </div>
+    </div>
     <div id="panels"></div>
     <div id="rawCard" class="card" style="margin-top:12px">
       <h2>Полный JSON</h2>
@@ -1221,6 +1260,70 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
     document.getElementById("btnSayPrivet")?.addEventListener("click", () => boardFetch("melody?id=9&ch=A&gain=" + gainV(), 15000));
     document.getElementById("btnMelStop")?.addEventListener("click", () => boardFetch("melody?id=0", 3000));
 
+    // ===== 3D-визуализатор накопленного облака точек (камера+ToF) =====
+    (function() {{
+      const cv = document.getElementById("cloud3d");
+      if (!cv) return;
+      const ctx = cv.getContext("2d");
+      let pts = [];
+      let yaw = 0.7, pitch = 0.35, zoom = 1.0;
+      let cxw = 0, cyw = 0, czw = 0, scl = 120;
+      let drag = false, lx = 0, ly = 0;
+      const statusEl = document.getElementById("cloudStatus");
+      const countEl = document.getElementById("cloudCount");
+      function autofit() {{
+        if (!pts.length) return;
+        let mnx=1e9,mxx=-1e9,mny=1e9,mxy=-1e9,mnz=1e9,mxz=-1e9;
+        for (const p of pts) {{ mnx=Math.min(mnx,p[0]);mxx=Math.max(mxx,p[0]);mny=Math.min(mny,p[1]);mxy=Math.max(mxy,p[1]);mnz=Math.min(mnz,p[2]);mxz=Math.max(mxz,p[2]); }}
+        cxw=(mnx+mxx)/2; cyw=(mny+mxy)/2; czw=(mnz+mxz)/2;
+        const span = Math.max(0.3, mxx-mnx, mxy-mny, mxz-mnz);
+        scl = (Math.min(cv.width, cv.height) * 0.42) / span;
+      }}
+      function draw() {{
+        ctx.fillStyle = "#0d1117"; ctx.fillRect(0,0,cv.width,cv.height);
+        const cx = cv.width/2, cy = cv.height/2;
+        if (!pts.length) {{ ctx.fillStyle="#6b7785"; ctx.font="13px sans-serif"; ctx.fillText("нет точек — нажми «Снять кадр»", 20, cy); return; }}
+        const cyaw=Math.cos(yaw), syaw=Math.sin(yaw), cpit=Math.cos(pitch), spit=Math.sin(pitch);
+        const s = scl*zoom;
+        const proj = [];
+        for (const p of pts) {{
+          const x=(p[0]-cxw), y=(p[1]-cyw), z=(p[2]-czw);
+          const x1 = cyaw*x + syaw*z, z1 = -syaw*x + cyaw*z, y1 = y;
+          const y2 = cpit*y1 - spit*z1, z2 = spit*y1 + cpit*z1;
+          const depth = z2 + 6.0;
+          if (depth <= 0.1) continue;
+          proj.push([cx + x1*s, cy - y2*s, depth, p[3], p[4], p[5]]);
+        }}
+        proj.sort((a,b)=>b[2]-a[2]);
+        for (const q of proj) {{
+          const rad = Math.max(1.2, 3.2 - (q[2]-6)/3);
+          ctx.beginPath(); ctx.arc(q[0], q[1], rad, 0, Math.PI*2);
+          ctx.fillStyle = "rgb("+q[3]+","+q[4]+","+q[5]+")"; ctx.fill();
+        }}
+      }}
+      async function refresh() {{
+        try {{ const r = await fetch("/cloud/data?_ts="+Date.now(), {{cache:"no-store"}}); const j = await r.json();
+          if (j.ok) {{ pts = j.points || []; if (countEl) countEl.textContent = j.count; autofit(); draw(); }} }} catch(e) {{}}
+      }}
+      cv.addEventListener("pointerdown", e => {{ drag=true; lx=e.clientX; ly=e.clientY; try {{ cv.setPointerCapture(e.pointerId); }} catch(_){{}} }});
+      cv.addEventListener("pointermove", e => {{ if(!drag) return; yaw += (e.clientX-lx)*0.01; pitch += (e.clientY-ly)*0.01; pitch=Math.max(-1.4,Math.min(1.4,pitch)); lx=e.clientX; ly=e.clientY; draw(); }});
+      cv.addEventListener("pointerup", () => {{ drag=false; }});
+      cv.addEventListener("wheel", e => {{ e.preventDefault(); zoom *= (e.deltaY<0?1.12:0.89); zoom=Math.max(0.2,Math.min(6,zoom)); draw(); }}, {{passive:false}});
+      const bCap = document.getElementById("btnCloudCap");
+      if (bCap) bCap.onclick = async () => {{
+        bCap.disabled=true; if(statusEl) statusEl.textContent="снимаю кадр…";
+        try {{ const y = parseFloat(document.getElementById("cloudYaw").value)||0;
+          const r = await fetch("/cloud/capture?yaw="+y+"&_ts="+Date.now(), {{cache:"no-store"}}); const j = await r.json();
+          if (statusEl) statusEl.textContent = j.ok ? ("+"+j.added+" точек (res "+(j.res||"?")+")") : ("ошибка: "+(j.error||"?"));
+          await refresh();
+        }} catch(e) {{ if(statusEl) statusEl.textContent="ошибка: "+e; }}
+        finally {{ bCap.disabled=false; }}
+      }};
+      const bClr = document.getElementById("btnCloudClear");
+      if (bClr) bClr.onclick = async () => {{ try {{ await fetch("/cloud/clear?_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} pts=[]; if(countEl) countEl.textContent="0"; if(statusEl) statusEl.textContent="очищено"; draw(); }};
+      draw(); refresh();
+    }})();
+
     function render(obj) {{
       updateRobotTof(obj);
       if (coreOnly) {{
@@ -1635,6 +1738,82 @@ def _run_http_mode(
                         self.send_header("Connection", "close")
                         self.end_headers()
                         self.wfile.write(data)
+                elif path.startswith("/cloud/"):
+                    # Накопленное цветное облако точек (камера+ToF) для 3D-визуализатора.
+                    from urllib.parse import parse_qsl
+
+                    def _cloud_json(obj, code=200):
+                        b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+                        self.send_response(code)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(b)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(b)
+
+                    csub = path[7:]
+                    if not _HAVE_SPATIAL:
+                        _cloud_json({"ok": 0, "error": "spatial module unavailable"}, 503)
+                        return
+                    if csub.startswith("clear"):
+                        with _CLOUD_LOCK:
+                            _CLOUD["pc"] = PointCloud(voxel_m=0.03)
+                        _cloud_json({"ok": 1, "total": 0})
+                    elif csub.startswith("capture"):
+                        yaw = 0.0
+                        if "?" in self.path:
+                            for k, v in parse_qsl(self.path.split("?", 1)[1]):
+                                if k == "yaw":
+                                    try:
+                                        yaw = float(v)
+                                    except ValueError:
+                                        pass
+                        board_ip = _board_ip_for_control(port, baud)
+                        if not board_ip:
+                            _cloud_json({"ok": 0, "error": "no_board_ip"}, 503)
+                            return
+                        try:
+                            jpeg, tof = fetch_frame(board_ip)
+                        except Exception as e:
+                            _cloud_json({"ok": 0, "error": repr(e)}, 502)
+                            return
+                        with _CLOUD_LOCK:
+                            pc = _CLOUD["pc"]
+                            added = add_frame(pc, tof, jpeg, Pose(yaw=_math.radians(yaw)), _CLOUD["cfg"])
+                            total = len(pc)
+                        _cloud_json({"ok": 1, "added": added, "total": total, "res": tof.get("res")})
+                    elif csub.startswith("data"):
+                        with _CLOUD_LOCK:
+                            pts = list(_CLOUD["pc"]._vox.values())
+                        cap = 6000  # не топить браузер: прорежаем равномерно
+                        if len(pts) > cap:
+                            step = len(pts) // cap + 1
+                            pts = pts[::step]
+                        arr = [[round(p[0], 3), round(p[1], 3), round(p[2], 3),
+                                int(p[3]), int(p[4]), int(p[5])] for p in pts]
+                        _cloud_json({"ok": 1, "count": len(arr), "points": arr})
+                    elif csub.startswith("ply"):
+                        with _CLOUD_LOCK:
+                            rows = list(_CLOUD["pc"]._vox.values())
+                        out = ["ply", "format ascii 1.0", "element vertex %d" % len(rows),
+                               "property float x", "property float y", "property float z",
+                               "property uchar red", "property uchar green", "property uchar blue",
+                               "end_header"]
+                        for x, y, z, r, g, b in rows:
+                            out.append("%.4f %.4f %.4f %d %d %d" % (x, y, z, int(r), int(g), int(b)))
+                        body = ("\n".join(out) + "\n").encode("ascii")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/octet-stream")
+                        self.send_header("Content-Disposition", 'attachment; filename="room.ply"')
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_error(404)
                 elif path.startswith("/board/"):
                     import urllib.request
                     from urllib.parse import parse_qsl, urlencode
