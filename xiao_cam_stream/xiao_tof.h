@@ -158,6 +158,9 @@ static void xiaoTofApplyProfile(XiaoTofProfile p, bool force = false) {
   gTof.vl53l7cx_stop_ranging();
   /* Порядок по UM3038: resolution → ranging mode (+integration) → frequency → start. */
   bool ok = gTof.vl53l7cx_set_resolution(res) == 0;
+  /* CLOSEST: для объезда важнее ближайшая цель в зоне, а не самая яркая
+     (дефолт сенсора — STRONGEST). Ставится при остановленном ranging. */
+  gTof.vl53l7cx_set_target_order(VL53L7CX_TARGET_ORDER_CLOSEST);
   ok = ok && gTof.vl53l7cx_set_ranging_mode(mode) == 0;
   if (ok && integrationMs) {
     ok = gTof.vl53l7cx_set_integration_time_ms(integrationMs) == 0;
@@ -263,6 +266,17 @@ static void xiaoTofAutoEvaluate(unsigned long now) {
 static inline void xiaoTofInit() {
 #if (XIAO_TOF_SDA == 19 || XIAO_TOF_SDA == 20 || XIAO_TOF_SCL == 19 || XIAO_TOF_SCL == 20)
 #error "GPIO19/20 = USB D-/D+ on ESP32-S3 — COM пропадёт после Wire.begin"
+#endif
+#if XIAO_TOF_LPN_PIN >= 0
+  /* Аппаратный сброс сенсора тоглом LPn — лечит зависание I2C (SDA stuck)
+     при ребуте только MCU без обесточивания сенсора. LPn LOW гейтит I2C
+     (питание и залитая в RAM прошивка сохраняются), LOW→HIGH сбрасывает
+     состояние шины. Это и есть recovery, недоступное при LPn-перемычке. */
+  pinMode(XIAO_TOF_LPN_PIN, OUTPUT);
+  digitalWrite(XIAO_TOF_LPN_PIN, LOW);
+  delay(12);
+  digitalWrite(XIAO_TOF_LPN_PIN, HIGH);
+  delay(5);
 #endif
   Wire.begin(XIAO_TOF_SDA, XIAO_TOF_SCL);
   Wire.setClock(400000L);
