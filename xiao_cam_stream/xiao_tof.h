@@ -28,6 +28,9 @@
 #ifndef XIAO_TOF_I2C_RST_PIN
 #define XIAO_TOF_I2C_RST_PIN -1
 #endif
+#ifndef XIAO_TOF_SIGMA_MAX_MM
+#define XIAO_TOF_SIGMA_MAX_MM 15   /* порог шума зоны (мм); 0 — фильтр выкл */
+#endif
 
 enum XiaoTofProfile : uint8_t {
   XIAO_TOF_BALANCED = 0, /* 4×4, 30 Гц */
@@ -194,8 +197,16 @@ static uint16_t xiaoTofFrameCenterMin() {
     const uint16_t idx = static_cast<uint16_t>(z) * VL53L7CX_NB_TARGET_PER_ZONE;
     const uint8_t st = gTofResults.target_status[idx];
     const int16_t d = gTofResults.distance_mm[idx];
+    /* range_sigma_mm уже в мм (ULD делит на 128). Высокая sigma = шумной/
+       ненадёжный замер; отсекаем — иначе «дрожащая» зона даёт ложный
+       выброс вниз, а tof_mm = минимум → ложный стоп. 0 = очень точно. */
+#if !defined(VL53L7CX_DISABLE_RANGE_SIGMA_MM) && (XIAO_TOF_SIGMA_MAX_MM > 0)
+    const bool sigmaOk = gTofResults.range_sigma_mm[idx] <= XIAO_TOF_SIGMA_MAX_MM;
+#else
+    const bool sigmaOk = true;  /* фильтр выключен (порог 0) или поле отключено */
+#endif
     const bool valid = gTofResults.nb_target_detected[z] > 0 && (st == 5 || st == 9) && d > 0 &&
-                       xiaoTofValidMm(static_cast<uint16_t>(d));
+                       sigmaOk && xiaoTofValidMm(static_cast<uint16_t>(d));
     gTofGrid[z] = valid ? d : -1;
     const uint8_t row = z / side;
     if (valid && row >= rowFrom && row < rowTo) {
