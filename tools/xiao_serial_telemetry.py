@@ -756,12 +756,13 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
     </div>
     <div id="robotCard" class="card" style="margin-bottom:12px">
       <h2>Робот · UNO-стек на XIAO</h2>
-      <p class="hint" style="margin:0 0 10px">Джойстик и скан идут на плату по Wi‑Fi (<code>/board/…</code>). VL53L0X: SDA GPIO20, SCL GPIO9.</p>
+      <p class="hint" style="margin:0 0 10px">Джойстик и скан идут на плату по Wi‑Fi (<code>/board/…</code>). VL53L7CX (мультизонный): SDA GPIO8, SCL GPIO9.</p>
       <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
         <div>
-          <canvas id="radar" width="320" height="210" style="background:#0d1117;border-radius:8px;border:1px solid #30363d"></canvas>
+          <canvas id="tof3d" width="340" height="280" style="background:#0d1117;border-radius:8px;border:1px solid #30363d;touch-action:none;cursor:grab"></canvas>
           <div id="radarDist" style="text-align:center;font-size:0.85rem;color:#8b9cb3;margin-top:6px">—</div>
-          <div style="font-size:0.75rem;color:#8b9cb3;margin-top:4px">Профиль: <span id="tofProfile">—</span> · замеров: <span id="tofCount">0</span></div>
+          <div style="font-size:0.75rem;color:#8b9cb3;margin-top:4px">Профиль: <span id="tofProfile">—</span> · сетка <span id="tofRes">—</span> · замеров: <span id="tofCount">0</span></div>
+          <div style="font-size:0.7rem;color:#6b7785;margin-top:2px">3D-глубина, что видит сенсор · тяни мышью повернуть · ближе = красный, дальше = синий</div>
         </div>
         <div>
           <div id="joy" style="width:168px;height:168px;border-radius:50%;background:#1c2738;border:2px solid #30363d;position:relative;touch-action:none">
@@ -959,42 +960,130 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       elRaw.textContent = JSON.stringify(slim, null, 2);
     }}
 
-    const RADAR = {{ fovDeg: 27, maxMm: 1200 }};
     function tofIsValid(j) {{
       if (j.tof_valid === 0 || j.tof_valid === false) return false;
       const mm = j.tof_mm;
       return mm != null && mm >= 20 && mm < 8190;
     }}
-    function drawRadar(mm) {{
-      const canvas = document.getElementById("radar");
+
+    // ===== 3D-вид глубины: матрица зон VL53L7CX как поверхность, что видит сенсор =====
+    // Сенсор в начале координат, смотрит вперёд +Z, вверх +Y. FoV ~64° на ось (90° по диагонали).
+    const TOF3D = {{ fovDeg: 64, maxMm: 2000, yaw: 0.7, pitch: 0.42, autoYaw: 0.0045,
+                     drag: false, lastX: 0, lastY: 0, lastInput: 0 }};
+    let tofGrid = null, tofSide = 0;
+
+    function tofColor(mm, alpha) {{
+      const t = Math.max(0, Math.min(1, (mm - 150) / (TOF3D.maxMm - 150)));
+      const hue = t * 215;  // ближе=красный(0), дальше=синий(215)
+      return "hsla(" + hue.toFixed(0) + ",85%,55%," + (alpha == null ? 1 : alpha) + ")";
+    }}
+    function tofProject(p) {{
+      const pivotZ = 1000;
+      const X = p.x, Y = p.y, Z = p.z - pivotZ;
+      const cy = Math.cos(TOF3D.yaw), sy = Math.sin(TOF3D.yaw);
+      const x1 = X * cy + Z * sy, z1 = -X * sy + Z * cy, y1 = Y;
+      const cp = Math.cos(TOF3D.pitch), sp = Math.sin(TOF3D.pitch);
+      const y2 = y1 * cp - z1 * sp, z2 = y1 * sp + z1 * cp, x2 = x1;
+      const D = 2700, f = 360, depth = z2 + D;
+      if (depth < 1) return null;
+      return {{ sx: x2 * f / depth, sy: -y2 * f / depth, depth: depth }};
+    }}
+    function tofZonePoint(r, c, side, mm) {{
+      const half = (TOF3D.fovDeg / 2) * Math.PI / 180;
+      const az = (side < 2) ? 0 : ((c / (side - 1)) - 0.5) * 2 * half;
+      const el = (side < 2) ? 0 : (0.5 - (r / (side - 1))) * 2 * half;
+      const ce = Math.cos(el);
+      return {{ x: mm * ce * Math.sin(az), y: mm * Math.sin(el), z: mm * ce * Math.cos(az) }};
+    }}
+    function drawTof3d() {{
+      const canvas = document.getElementById("tof3d");
       if (!canvas) return;
       const ctx = canvas.getContext("2d");
-      const w = canvas.width, h = canvas.height, cx = w / 2, cy = h - 16, maxR = h - 28;
-      const halfFov = (RADAR.fovDeg / 2) * Math.PI / 180;
-      const a0 = -Math.PI / 2 - halfFov, a1 = -Math.PI / 2 + halfFov, ac = -Math.PI / 2;
+      const w = canvas.width, h = canvas.height, cx = w / 2, cy = h / 2;
       ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, w, h);
-      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, maxR, a0, a1); ctx.closePath();
-      ctx.fillStyle = "rgba(0,180,120,0.15)"; ctx.fill();
-      const valid = mm != null && mm >= 20 && mm < 8190;
-      const elDist = document.getElementById("radarDist");
-      if (valid) {{
-        const dist = Math.min(mm, RADAR.maxMm);
-        const beamR = maxR * (dist / RADAR.maxMm);
-        ctx.strokeStyle = "#3dff9a"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + beamR * Math.cos(ac), cy + beamR * Math.sin(ac)); ctx.stroke();
-        ctx.fillStyle = "#3dff9a";
-        ctx.beginPath(); ctx.arc(cx + beamR * Math.cos(ac), cy + beamR * Math.sin(ac), 8, 0, Math.PI * 2); ctx.fill();
-        if (elDist) elDist.textContent = dist + " mm";
-      }} else if (elDist) elDist.textContent = "нет цели";
+      const half = (TOF3D.fovDeg / 2) * Math.PI / 180;
+      // опорные рамки глубины 0.5/1/1.5/2 м + лучи FoV из сенсора
+      const corner = (dm, sx, sy) => {{ const ce = Math.cos(sy * half);
+        return tofProject({{ x: dm * ce * Math.sin(sx * half), y: dm * Math.sin(sy * half), z: dm * ce * Math.cos(sx * half) }}); }};
+      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(120,140,160,0.18)";
+      const ring = {{}};
+      [500, 1000, 1500, 2000].forEach(dm => {{
+        const cs = [corner(dm,-1,1), corner(dm,1,1), corner(dm,1,-1), corner(dm,-1,-1)];
+        if (cs.some(p => !p)) return; ring[dm] = cs;
+        ctx.beginPath(); cs.forEach((p,i) => {{ const X=cx+p.sx, Y=cy+p.sy; i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); }});
+        ctx.closePath(); ctx.stroke();
+      }});
+      const o = tofProject({{ x:0, y:0, z:0 }}), far = ring[2000];
+      if (o && far) {{ ctx.strokeStyle = "rgba(120,140,160,0.13)"; far.forEach(p => {{
+        ctx.beginPath(); ctx.moveTo(cx+o.sx, cy+o.sy); ctx.lineTo(cx+p.sx, cy+p.sy); ctx.stroke(); }}); }}
+      if (o) {{ ctx.fillStyle = "#8b9cb3"; ctx.beginPath(); ctx.arc(cx+o.sx, cy+o.sy, 3, 0, Math.PI*2); ctx.fill(); }}
+
+      if (!tofGrid || tofSide < 2) {{
+        ctx.fillStyle = "#6b7785"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
+        ctx.fillText("ожидание данных ToF…", cx, cy); ctx.textAlign = "start"; return;
+      }}
+      const side = tofSide;
+      const proj = [];
+      for (let r=0; r<side; r++) {{ proj.push([]);
+        for (let c=0; c<side; c++) {{
+          const mm = tofGrid[r*side+c];
+          if (mm == null || mm < 20) {{ proj[r].push(null); continue; }}
+          const pr = tofProject(tofZonePoint(r, c, side, Math.min(mm, TOF3D.maxMm*1.25)));
+          proj[r].push(pr ? {{ sx: pr.sx, sy: pr.sy, depth: pr.depth, mm: mm }} : null);
+        }}
+      }}
+      // меш-квадраты, back→front
+      const quads = [];
+      for (let r=0; r<side-1; r++) for (let c=0; c<side-1; c++) {{
+        const a=proj[r][c], b=proj[r][c+1], d=proj[r+1][c+1], e=proj[r+1][c];
+        if (!a||!b||!d||!e) continue;
+        quads.push({{ a,b,d,e, mm:(a.mm+b.mm+d.mm+e.mm)/4, depth:(a.depth+b.depth+d.depth+e.depth)/4 }});
+      }}
+      quads.sort((p,q) => q.depth - p.depth);
+      quads.forEach(q => {{
+        ctx.beginPath(); ctx.moveTo(cx+q.a.sx, cy+q.a.sy); ctx.lineTo(cx+q.b.sx, cy+q.b.sy);
+        ctx.lineTo(cx+q.d.sx, cy+q.d.sy); ctx.lineTo(cx+q.e.sx, cy+q.e.sy); ctx.closePath();
+        ctx.fillStyle = tofColor(q.mm, 0.5); ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.10)"; ctx.lineWidth = 1; ctx.stroke();
+      }});
+      // точки зон поверх
+      for (let r=0; r<side; r++) for (let c=0; c<side; c++) {{
+        const p = proj[r][c]; if (!p) continue;
+        const rad = Math.max(2.5, 7 - (p.depth - 2200) / 500);
+        ctx.beginPath(); ctx.arc(cx+p.sx, cy+p.sy, rad, 0, Math.PI*2);
+        ctx.fillStyle = tofColor(p.mm, 1); ctx.fill();
+      }}
+    }}
+    function tof3dLoop() {{
+      if (!TOF3D.drag && (Date.now() - TOF3D.lastInput > 3500)) TOF3D.yaw += TOF3D.autoYaw;
+      drawTof3d();
+      requestAnimationFrame(tof3dLoop);
+    }}
+    function tof3dBindInput() {{
+      const cv = document.getElementById("tof3d"); if (!cv) return;
+      cv.addEventListener("pointerdown", e => {{ TOF3D.drag = true; TOF3D.lastX = e.clientX; TOF3D.lastY = e.clientY; cv.setPointerCapture(e.pointerId); }});
+      cv.addEventListener("pointermove", e => {{ if (!TOF3D.drag) return;
+        TOF3D.yaw += (e.clientX - TOF3D.lastX) * 0.01;
+        TOF3D.pitch = Math.max(-0.2, Math.min(1.3, TOF3D.pitch + (e.clientY - TOF3D.lastY) * 0.008));
+        TOF3D.lastX = e.clientX; TOF3D.lastY = e.clientY; TOF3D.lastInput = Date.now(); }});
+      const end = () => {{ TOF3D.drag = false; TOF3D.lastInput = Date.now(); }};
+      cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
+    }}
+    async function tofPoll() {{
+      try {{ const g = await boardFetch("tof", 2000); if (g && g.grid && g.res) {{ tofGrid = g.grid; tofSide = g.res; }} }} catch (e) {{}}
+      setTimeout(tofPoll, 220);
     }}
     function updateRobotTof(j) {{
       const elP = document.getElementById("tofProfile");
       const elC = document.getElementById("tofCount");
+      const elR = document.getElementById("tofRes");
+      const elD = document.getElementById("radarDist");
       if (elP) elP.textContent = (j.tof_profile || "—") + (j.tof_auto ? " · авто" : "");
       if (elC) elC.textContent = j.tof_count ?? 0;
-      drawRadar(tofIsValid(j) ? j.tof_mm : null);
+      if (elR) elR.textContent = j.tof_res ? (j.tof_res + "×" + j.tof_res) : "—";
+      if (elD) elD.textContent = tofIsValid(j) ? ("ближайшее: " + j.tof_mm + " мм") : "нет цели";
     }}
+    if (document.getElementById("tof3d")) {{ tof3dBindInput(); requestAnimationFrame(tof3dLoop); tofPoll(); }}
     const MAP_W = 80, MAP_H = 80, CELL_MM = 50, ROBOT_CX = 40, ROBOT_CY = 40;
     const mapLog = new Float32Array(MAP_W * MAP_H);
     const mapCanvas = document.getElementById("mapGrid");
@@ -1549,6 +1638,8 @@ def _run_http_mode(
                         board_path = "melody" + ("?" + qs if qs else "")
                     elif sub.startswith("status"):
                         board_path = "status"
+                    elif sub.startswith("tof"):
+                        board_path = "tof"  # сетка зон для 3D-вида
                     else:
                         self.send_error(404)
                         return
