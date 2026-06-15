@@ -180,7 +180,7 @@ static inline bool xiaoImuIsOk() { return gImuOk; }
 static inline float xiaoImuYaw() { return gImuYaw; }
 
 static inline void xiaoImuAppendTelemetry(String &j, bool &comma) {
-  auto add = [&](const char *k, float v, uint8_t dp) {
+  auto add = [&](const char *k, float v, unsigned int dp) {
     if (comma) j += ',';
     comma = true;
     j += '"'; j += k; j += "\":"; j += String(v, dp);
