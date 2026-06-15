@@ -1,1 +1,5 @@
 pillow>=9.0
+# Этап 2 (плотная глубина) — на сервере:
+#   numpy>=1.21            # densify_to_points
+#   torch + transformers   # Depth Anything (моно-глубина); GPU/Jetson желательно
+# Этап 1 и Wi-Fi-якорь (этап 3) зависимостей сверх stdlib не требуют.

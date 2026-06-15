@@ -68,3 +68,25 @@ py -3 spatial/build_model.py --synth --frames 8 --yaw-step 45 --out test.ply
 64 зон → плотная глубина из Depth Anything, масштабированная теми же ToF-точками
 (аффинный МНК), и плотное цветное облако. См. конвейер в
 `docs/hardware/camera-tof-spatial-model.md`.
+
+## Этап 2 — плотная глубина (`depth_fusion.py`)
+
+Моно-сеть (Depth Anything) → относительная глубина; 64 ToF-зоны задают
+метрический масштаб аффинным fit `1/Z = s·rel + b` (`fit_scale_shift`, МНК 2×2,
+опц. RANSAC). Бэкенд подключаемый (`DepthAnythingBackend` — ленивый torch;
+`SynthBackend` — тест). `densify_to_points()` → плотное облако (нужен numpy +
+калибровка камеры). Тяжёлое — на сервере с GPU/Jetson. Самотест: `py -3 spatial/depth_fusion.py`.
+
+## Этап 3 — Wi-Fi-якорь позиции (`wifi_anchor.py`, `wifi_collect.py`)
+
+Радиокарта строится **в координатах позы** робота без обмера: на ходу скан AP
+(прошивка `GET /wifiscan`) + поза (PoseEstimator) → `WifiMap`. Матчинг **SE-WKNN**
+(корреляция Спирмена по рангу силы AP — устойчив к дрейфу уровня). Даёт грубый
+абсолютный фикс (x,z) → сброс дрейфа одометрии/IMU. Wi-Fi = якорь позиции, не курс.
+
+```bash
+py -3 spatial/wifi_collect.py --ip <IP> --map home.wifi --collect 30   # построить карту
+py -3 spatial/wifi_collect.py --ip <IP> --map home.wifi --locate       # фикс позиции
+py -3 spatial/wifi_collect.py --synth                                   # тест без железа
+```
+⚠ `/wifiscan` (синхронный скан) кратко роняет STA-связь — дёргать редко/на стоянке.
