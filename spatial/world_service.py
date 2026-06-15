@@ -36,25 +36,48 @@ def _dist_color(z_m: float, zmax: float = 3.5):
     return (int(255 * t), 80, int(255 * (1 - t)))
 
 
+def _wrap_pi(a: float) -> float:
+    """Угол в (-pi, pi]."""
+    while a > math.pi:
+        a -= 2 * math.pi
+    while a <= -math.pi:
+        a += 2 * math.pi
+    return a
+
+
 class PoseEstimator:
-    """Best-effort поза робота. Источники (по мере появления):
-    - энкодеры enc_l/enc_r из телеметрии -> дифф-одометрия (сейчас, если разведены);
-    - ручной yaw (turntable/скан) — поле manual_yaw_deg;
-    - IMU BNO085 -> курс (TODO при покупке).
+    """Best-effort поза робота. Источники курса/позиции:
+    - IMU MPU6050 (imu_yaw из телеметрии) -> КУРС (приоритетно; абсолютный по гиро,
+      медленно дрейфует — связка с энкодерами: гиро ведёт сквозь проскальзывание);
+    - энкодеры enc_l/enc_r -> дистанция всегда; курс — только если IMU нет;
+    - ручной yaw (turntable/скан) — manual_yaw_deg (fallback без датчиков).
+    Wi-Fi-якорь позиции (сброс дрейфа x/z) — отдельно (см. docs/roadmap.md).
     """
 
     def __init__(self, wheel_base_m: float = 0.13, ticks_per_m: float = 1000.0):
         self.x = 0.0
         self.z = 0.0
-        self.yaw = 0.0
+        self.yaw = 0.0           # рад, курс в мире
         self.wheel_base = wheel_base_m
         self.ticks_per_m = ticks_per_m
         self._el = None
         self._er = None
+        self._imu_yaw0 = None    # опорный yaw IMU (рад) — нулевая отсчётная точка курса
         self.manual_yaw_deg = 0.0
         self.have_odom = False
+        self.have_imu = False
 
     def update(self, telem: dict) -> Pose:
+        # --- Курс: приоритет IMU (imu_ok + imu_yaw в градусах) ---
+        imu_yaw = telem.get("imu_yaw")
+        if telem.get("imu_ok") in (1, "1", True) and isinstance(imu_yaw, (int, float)):
+            self.have_imu = True
+            iy = math.radians(imu_yaw)
+            if self._imu_yaw0 is None:
+                self._imu_yaw0 = iy
+            self.yaw = _wrap_pi(iy - self._imu_yaw0)
+
+        # --- Энкодеры: дистанция всегда; курс — только без IMU ---
         el = telem.get("enc_l")
         er = telem.get("enc_r")
         if isinstance(el, (int, float)) and isinstance(er, (int, float)):
@@ -63,8 +86,8 @@ class PoseEstimator:
                 dl = (el - self._el) / self.ticks_per_m
                 dr = (er - self._er) / self.ticks_per_m
                 d = (dl + dr) / 2.0
-                dyaw = (dr - dl) / self.wheel_base
-                self.yaw += dyaw
+                if not self.have_imu:
+                    self.yaw = _wrap_pi(self.yaw + (dr - dl) / self.wheel_base)
                 self.x += d * math.sin(self.yaw)
                 self.z += d * math.cos(self.yaw)
             self._el = el

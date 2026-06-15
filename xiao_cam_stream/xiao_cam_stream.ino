@@ -69,6 +69,7 @@
 #include "xiao_drive.h"
 #include "xiao_motor_audio.h"
 #include "xiao_tof.h"
+#include "xiao_imu.h"
 #include "xiao_http_ota.h"
 
 #ifndef XIAO_OTA_PASSWORD
@@ -79,8 +80,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 22u;
-static constexpr char kXiaoFwVersion[] = "1.3.6";
+static constexpr uint32_t kXiaoFwBuild = 23u;
+static constexpr char kXiaoFwVersion[] = "1.4.0";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -961,6 +962,7 @@ static String telemetryBuildJson() {
 
   xiaoDriveAppendTelemetry(j, comma);
   xiaoTofAppendTelemetry(j, comma);
+  xiaoImuAppendTelemetry(j, comma);
 
   const float tchip = temperatureRead();
   if (!isnan(tchip) && tchip > -40.0f && tchip < 130.0f) {
@@ -1082,6 +1084,9 @@ static void handleControl() {
     gCtrlWifiHiPower = server.arg("wifi").toInt() != 0;
     applyWifiPsFromFlag();
   }
+  if (server.hasArg("imuzero")) {
+    xiaoImuZeroYaw();
+  }
 #if XIAO_DRIVE_ENABLE
   if (server.hasArg("drive")) {
     xiaoDriveSetEnabled(server.arg("drive").toInt() != 0);
@@ -1158,6 +1163,7 @@ static void handleRobotStatus() {
   String j = F("{\"ok\":1");
   bool comma = true;
   xiaoTofAppendTelemetry(j, comma);
+  xiaoImuAppendTelemetry(j, comma);
   XiaoDriveState ds{};
   xiaoDriveGetState(&ds);
   j += F(",\"cmd_l\":");
@@ -1327,6 +1333,7 @@ void setup() {
 
   xiaoDriveInit();
   xiaoTofInit();
+  xiaoImuInit();
 
   telemetryMicInit();
 #if XIAO_TELEM_HAVE_PDM
@@ -1463,6 +1470,7 @@ void loop() {
   }
   telemetryMicTick();
   xiaoTofTick();
+  xiaoImuTick();
   xiaoAudioTick();
   xiaoDriveTick();
   statusLedTick();
