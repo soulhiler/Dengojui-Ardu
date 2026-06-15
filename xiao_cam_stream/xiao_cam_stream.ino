@@ -1245,6 +1245,31 @@ static void handleTelemetry() {
   server.send(200, F("application/json; charset=utf-8"), body);
 }
 
+/** GET /wifiscan: список видимых AP {bssid,rssi,ssid} для Wi-Fi-якоря позиции
+ *  (сервер строит радиокарту в координатах модели, см. spatial/wifi_anchor.py).
+ *  ⚠ Синхронный скан ~1.5–4 с КРАТКО роняет STA-связь — дёргать редко/на стоянке. */
+static void handleWifiScan() {
+  const int n = WiFi.scanNetworks(false, false);  /* sync, без скрытых */
+  String j = F("{\"ok\":1,\"n\":");
+  j += String(n < 0 ? 0 : n);
+  j += F(",\"aps\":[");
+  for (int i = 0; i < n; ++i) {
+    if (i) j += ',';
+    j += F("{\"bssid\":\"");
+    j += WiFi.BSSIDstr(i);
+    j += F("\",\"rssi\":");
+    j += String(WiFi.RSSI(i));
+    j += F(",\"ch\":");
+    j += String(WiFi.channel(i));
+    j += F("}");
+  }
+  j += F("]}");
+  WiFi.scanDelete();
+  server.sendHeader(F("Cache-Control"), F("no-store"));
+  server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+  server.send(200, F("application/json; charset=utf-8"), j);
+}
+
 /** Сетка зон VL53L7CX (мм, -1 = нет цели); при XIAO_TOF_ENABLE 0 — {"ok":0}. */
 static void handleTofGrid() {
   String j;
@@ -1420,6 +1445,7 @@ void setup() {
   server.on("/telemetry", HTTP_GET, handleTelemetry);
   server.on("/control", HTTP_GET, handleControl);
   server.on("/tof", HTTP_GET, handleTofGrid);
+  server.on("/wifiscan", HTTP_GET, handleWifiScan);
   server.on("/floorcal", HTTP_GET, handleTofFloorCal);
 #if XIAO_DRIVE_ENABLE
   server.on("/drive", HTTP_GET, handleDrive);
