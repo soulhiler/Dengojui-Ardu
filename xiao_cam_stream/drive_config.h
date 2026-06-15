@@ -63,3 +63,7 @@
 /** Звук через обмотки TB6612 (как uno_motor_test). */
 #define XIAO_AUDIO_ENABLE 1
 
+
+/** MPU6050 (GY-521) — 6-осевой IMU для курса. Делит I2C-шину с ToF (адрес 0x68).
+ *  0 — выключить. SDA/SCL берутся из XIAO_TOF_SDA/SCL (та же шина). */
+#define XIAO_IMU_ENABLE 1

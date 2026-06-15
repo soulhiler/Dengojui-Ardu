@@ -62,3 +62,6 @@
 
 /** Звук через обмотки TB6612. */
 #define XIAO_AUDIO_ENABLE 1
+
+/* --- MPU6050 (GY-521) IMU, курс; 0 = выключен. Делит I2C с ToF (0x68 vs 0x29) --- */
+#define XIAO_IMU_ENABLE 1
