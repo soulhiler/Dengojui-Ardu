@@ -23,7 +23,7 @@ import threading
 import time
 
 from tof_cloud import CloudConfig, Pose, apply_pose, grid_to_points, zone_pixel
-from world_model import WorldModel
+from world_model import WorldModel, L_CONFIDENT
 from xiao_client import fetch_capture, fetch_telemetry, fetch_tof
 
 try:
@@ -74,8 +74,24 @@ class PoseEstimator:
         self._imu_yaw0 = None    # опорный yaw IMU (рад) — нулевая отсчётная точка курса
         self._imu_yaw_raw = None  # последний сырой курс IMU (рад) — для recenter()
         self.manual_yaw_deg = 0.0
+        self.yaw_correction = 0.0  # поправка курса от релокализации по карте (рад)
         self.have_odom = False
         self.have_imu = False
+
+    def _compose_pose(self) -> Pose:
+        """Текущая поза с учётом поправки релокализации и ручного yaw."""
+        eff = _wrap_pi(self.yaw + self.yaw_correction)
+        return Pose(yaw=eff + math.radians(self.manual_yaw_deg), tx=self.x, tz=self.z)
+
+    def peek_pose(self) -> Pose:
+        """Поза по текущему состоянию, без потребления телеметрии (после nudge_yaw)."""
+        return self._compose_pose()
+
+    def nudge_yaw(self, delta_rad: float, gain: float = 0.25):
+        """Подвинуть поправку курса на долю найденной релокализацией невязки δ.
+        Малый gain + демпфирование: карта мягко де-дрейфит гиро, не дёргая позу."""
+        self.yaw_correction = _wrap_pi(self.yaw_correction + gain * delta_rad)
+        return self.yaw_correction
 
     def recenter(self):
         """Принять ТЕКУЩИЙ курс за ноль («робот смотрит вперёд»).
@@ -110,11 +126,12 @@ class PoseEstimator:
                 d = (dl + dr) / 2.0
                 if not self.have_imu:
                     self.yaw = _wrap_pi(self.yaw + (dr - dl) / self.wheel_base)
-                self.x += d * math.sin(self.yaw)
-                self.z += d * math.cos(self.yaw)
+                eff = _wrap_pi(self.yaw + self.yaw_correction)
+                self.x += d * math.sin(eff)
+                self.z += d * math.cos(eff)
             self._el = el
             self._er = er
-        return Pose(yaw=self.yaw + math.radians(self.manual_yaw_deg), tx=self.x, tz=self.z)
+        return self._compose_pose()
 
 
 def frame_to_world(tof: dict, jpeg: bytes, pose: Pose, cfg: CloudConfig):
@@ -138,6 +155,45 @@ def frame_to_world(tof: dict, jpeg: bytes, pose: Pose, cfg: CloudConfig):
             rgb = _dist_color(z)
         wx, wy, wz = apply_pose(x, y, z, pose)
         yield (wx, wy, wz, rgb)
+
+
+def relocalize_yaw(model: WorldModel, robot_pts, tx: float, tz: float, base_yaw: float,
+                   window_deg: float = 25.0, step_deg: float = 1.0,
+                   l_thresh: float = L_CONFIDENT):
+    """РЕЛОКАЛИЗАЦИЯ КУРСА ПО КАРТЕ. Ищет поправку δ (рад) в окне ±window_deg вокруг
+    base_yaw, при которой текущий скан (robot_pts: список (x, y, z) в кадре робота)
+    лучше всего ложится на уже известную занятую карту. Это де-дрейфит гиро:
+    поза ~1-DOF (turntable), поэтому перебор по одному углу устойчив.
+
+    Возвращает dict {delta_rad, delta_deg, score, margin, hits, n} или None, если
+    данных мало. margin = (пик − медиана)/пик — уверенность совпадения (0..1).
+    """
+    if not robot_pts:
+        return None
+    n = int(round(window_deg / step_deg))
+    results = []
+    best_i, best_score, best_hits = 0, -1.0, 0
+    for i in range(-n, n + 1):
+        d = math.radians(i * step_deg)
+        p = Pose(yaw=base_yaw + d, tx=tx, tz=tz)
+        wpts = [apply_pose(x, y, z, p) for (x, y, z) in robot_pts]
+        score, hits = model.score_world_points(wpts, l_thresh=l_thresh)
+        results.append(score)
+        if score > best_score:
+            best_score, best_i, best_hits = score, i, hits
+    if best_score <= 0.0:
+        return None
+    ordered = sorted(results)
+    median = ordered[len(ordered) // 2]
+    margin = (best_score - median) / best_score if best_score > 0 else 0.0
+    return {
+        "delta_rad": math.radians(best_i * step_deg),
+        "delta_deg": round(best_i * step_deg, 1),
+        "score": round(best_score, 2),
+        "margin": round(margin, 3),
+        "hits": best_hits,
+        "n": len(robot_pts),
+    }
 
 
 class WorldService:
@@ -165,6 +221,72 @@ class WorldService:
         self.frames = 0
         self._dirty = 0
         self._last_save = 0.0
+        # --- релокализация курса по карте (де-дрейф гиро) ---
+        self.reloc_enabled = True
+        self.reloc_every = 5            # пробовать раз в N кадров
+        self.reloc_gain = 0.25          # доля найденной невязки, применяемая за раз (демпфирование)
+        self.reloc_min_conf = 40        # минимум уверенных вокселей карты, чтобы было с чем матчить
+        self.reloc_min_pts = 4          # минимум валидных точек в скане
+        self.reloc_min_margin = 0.35    # минимальная уверенность пика: отсекает рот-неоднозначную
+                                        # геометрию (плоская стена ~0.23 -> НЕ корректируем; различимая ~0.9)
+        self.reloc_window_deg = 25.0
+        self.last_reloc = {}            # последний результат (для статуса/диагностики)
+        self.reloc_count = 0
+
+    def _maybe_relocalize(self, robot_pts, pose: Pose) -> Pose:
+        """Если включено и накоплено достаточно карты — поправить курс по карте.
+        Вызывать ДО вливания текущего кадра (иначе скан тривиально матчит сам себя)."""
+        if not (self.reloc_enabled and robot_pts and len(robot_pts) >= self.reloc_min_pts):
+            return pose
+        with self.lock:
+            conf = sum(1 for v in self.model.vox.values() if v[0] >= L_CONFIDENT)
+            if conf < self.reloc_min_conf:
+                return pose
+            rl = relocalize_yaw(self.model, robot_pts, pose.tx, pose.tz, pose.yaw,
+                                window_deg=self.reloc_window_deg)
+        if not rl:
+            return pose
+        self.last_reloc = rl
+        if rl["margin"] >= self.reloc_min_margin and rl["hits"] >= self.reloc_min_pts \
+                and rl["delta_deg"] != 0.0:
+            self.pose.nudge_yaw(rl["delta_rad"], self.reloc_gain)
+            self.reloc_count += 1
+            return self.pose.peek_pose()
+        return pose
+
+    def relocalize_once(self) -> dict:
+        """Ручной одиночный матч по последнему кадру — для кнопки/эндпоинта.
+        Применяет поправку с полным усилением (gain=1), чтобы было видно эффект."""
+        ip = None
+        try:
+            ip = self.get_ip()
+        except Exception:
+            ip = None
+        if not ip:
+            return {"ok": 0, "error": "нет IP платы"}
+        try:
+            tof = fetch_tof(ip, timeout=4.0)
+            telem = fetch_telemetry(ip, timeout=3.0)
+        except Exception as e:
+            return {"ok": 0, "error": repr(e)}
+        pose = self.pose.update(telem)
+        res = int(tof.get("res", 8))
+        grid = tof.get("grid") or []
+        robot_pts = ([(x, y, z) for (r, c, x, y, z) in grid_to_points(grid, res, self.cfg)]
+                     if len(grid) >= res * res else [])
+        with self.lock:
+            conf = sum(1 for v in self.model.vox.values() if v[0] >= L_CONFIDENT)
+            rl = relocalize_yaw(self.model, robot_pts, pose.tx, pose.tz, pose.yaw,
+                                window_deg=self.reloc_window_deg) if robot_pts else None
+        if not rl:
+            return {"ok": 0, "error": "мало данных", "conf": conf, "n": len(robot_pts)}
+        applied = False
+        if rl["margin"] >= self.reloc_min_margin and rl["hits"] >= self.reloc_min_pts:
+            self.pose.nudge_yaw(rl["delta_rad"], 1.0)
+            self.reloc_count += 1
+            applied = True
+        self.last_reloc = rl
+        return {"ok": 1, "applied": applied, "conf": conf, **rl}
 
     # --- управление ---
     def start(self):
@@ -234,6 +356,15 @@ class WorldService:
                 except Exception:
                     telem = {}
                 pose = self.pose.update(telem)
+                # Релокализация курса по карте (де-дрейф гиро) — ДО вливания кадра,
+                # раз в reloc_every кадров, чтобы скан не матчил сам себя.
+                if self.reloc_enabled and (self.frames % self.reloc_every == 0):
+                    res = int(tof.get("res", 8))
+                    grid = tof.get("grid") or []
+                    if len(grid) >= res * res:
+                        robot_pts = [(x, y, z) for (r, c, x, y, z)
+                                     in grid_to_points(grid, res, self.cfg)]
+                        pose = self._maybe_relocalize(robot_pts, pose)
                 pts = list(frame_to_world(tof, jpeg, pose, self.cfg))
                 with self.lock:
                     added = self.model.integrate_frame(pts)
@@ -257,6 +388,7 @@ class WorldService:
     def status(self) -> dict:
         with self.lock:
             st = self.model.stats()
+        eff = _wrap_pi(self.pose.yaw + self.pose.yaw_correction)  # курс с поправкой релокализации
         st.update({
             "running": self.running,
             "paused": self.paused,
@@ -265,8 +397,12 @@ class WorldService:
             "last_error": self.last_error,
             "have_odom": self.pose.have_odom,
             "have_imu": self.pose.have_imu,
-            "pose": [round(self.pose.x, 3), round(self.pose.z, 3), round(self.pose.yaw, 3)],
-            "heading_deg": round(math.degrees(self.pose.yaw), 1),
+            "pose": [round(self.pose.x, 3), round(self.pose.z, 3), round(eff, 3)],
+            "heading_deg": round(math.degrees(eff), 1),
+            "reloc_enabled": self.reloc_enabled,
+            "reloc_count": self.reloc_count,
+            "reloc_corr_deg": round(math.degrees(self.pose.yaw_correction), 1),
+            "last_reloc": self.last_reloc or None,
             "age_s": round(time.time() - self.last_t, 1) if self.last_t else None,
         })
         return st

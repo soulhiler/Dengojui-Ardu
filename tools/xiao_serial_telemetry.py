@@ -840,6 +840,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
             <button type="button" id="btnWorldSave">Сохранить</button>
             <button type="button" id="btnWorldClear">Очистить</button>
             <button type="button" id="btnWorldRecenter" title="Принять текущий курс IMU за 0° (робот смотрит вперёд)">Курс=0</button>
+            <button type="button" id="btnWorldReloc" title="Релокализация: поправить курс по накопленной карте (де-дрейф гиро)">Релок по карте</button>
           </div>
           <div style="margin-top:8px;font-size:0.8rem;color:#8b9cb3">ручной yaw, °:
             <input type="number" id="cloudYaw" value="0" step="15" style="width:64px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:2px 4px">
@@ -1366,7 +1367,9 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
           if (poseEl && j.pose) {{
             const hd = (j.heading_deg!=null) ? j.heading_deg : Math.round((j.pose[2]||0)*57.3);
             const src = j.have_imu ? " (курс IMU)" : (j.have_odom ? " (одометрия)" : " (без позы)");
-            poseEl.textContent = "поза: x="+j.pose[0]+" z="+j.pose[1]+" курс="+hd+"°"+src;
+            const rc = (j.reloc_corr_deg!=null && Math.abs(j.reloc_corr_deg)>0.05)
+              ? (" · карта "+(j.reloc_corr_deg>0?"+":"")+j.reloc_corr_deg+"°×"+(j.reloc_count||0)) : "";
+            poseEl.textContent = "поза: x="+j.pose[0]+" z="+j.pose[1]+" курс="+hd+"°"+src+rc;
           }}
         }} catch(e) {{}}
       }}
@@ -1383,6 +1386,8 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       if (bYaw) bYaw.onclick = async () => {{ const y=parseFloat(document.getElementById("cloudYaw").value)||0; try {{ await fetch("/world/yaw?deg="+y+"&_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} if(statusEl) statusEl.textContent="ручной yaw → "+y+"°"; }};
       const bRc = document.getElementById("btnWorldRecenter");
       if (bRc) bRc.onclick = async () => {{ try {{ const r=await fetch("/world/recenter?_ts="+Date.now(), {{cache:"no-store"}}); const j=await r.json(); if(statusEl) statusEl.textContent = j.have_imu ? ("курс обнулён (был "+(j.was_deg)+"°)") : "курс=0 недоступен (нет IMU)"; }} catch(e) {{}} pollStatus(); }};
+      const bRl = document.getElementById("btnWorldReloc");
+      if (bRl) bRl.onclick = async () => {{ if(statusEl) statusEl.textContent="релокализация…"; try {{ const r=await fetch("/world/relocalize?_ts="+Date.now(), {{cache:"no-store"}}); const j=await r.json(); if(statusEl) statusEl.textContent = !j.ok ? ("релок: "+(j.error||"нет данных")+(j.conf!=null?(" (карта "+j.conf+")"):"")) : (j.applied ? ("курс поправлен на "+j.delta_deg+"° (margin "+j.margin+", точек "+j.hits+")") : ("совпадение слабое: δ="+j.delta_deg+"° margin="+j.margin+" — не применено")); }} catch(e) {{ if(statusEl) statusEl.textContent="ошибка релок"; }} pollStatus(); }};
       // вид сверху (occupancy) — карта для ориентации: x вправо, z вперёд (вверх)
       const top = document.getElementById("worldTop");
       const tctx = top ? top.getContext("2d") : null;
@@ -1919,6 +1924,17 @@ def _run_http_mode(
                         was = svc.pose.recenter() if svc else None
                         _wjson({"ok": 1, "have_imu": bool(svc and svc.pose.have_imu),
                                 "was_deg": was})
+                    elif wsub.startswith("relocalize"):
+                        # Одиночная релокализация курса по карте (де-дрейф гиро).
+                        if svc:
+                            _wjson(svc.relocalize_once())
+                        else:
+                            _wjson({"ok": 0, "error": "сервис не запущен"}, 503)
+                    elif wsub.startswith("reloctoggle"):
+                        on = (_wq("on", "1") not in ("0", "false", ""))
+                        if svc:
+                            svc.reloc_enabled = on
+                        _wjson({"ok": 1, "reloc_enabled": (svc.reloc_enabled if svc else None)})
                     elif wsub.startswith("save"):
                         if wlock:
                             wlock.acquire()

@@ -206,6 +206,74 @@ def simtest():
     return ok
 
 
+def run_service(ip: str, seconds: float, cfg: CloudConfig):
+    """Прогон РЕАЛЬНОГО WorldService против платы (интегрированный цикл с
+    релокализацией курса по карте). Печатает статус с полями reloc."""
+    from world_service import WorldService
+    wp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "world_service_test.json.gz")
+    if os.path.exists(wp):
+        os.remove(wp)
+    model = WorldModel(voxel_m=0.05)
+    svc = WorldService(model, get_ip=lambda: ip, world_path=wp, interval_s=1.0, cfg=cfg)
+    svc.start()
+    print("WorldService против %s на %.0f c (релокализация=%s, порог margin=%.2f)"
+          % (ip, seconds, svc.reloc_enabled, svc.reloc_min_margin))
+    print("Покрути робот в течение прогона — увидишь reloc#/corr, когда геометрия различима.\n")
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        time.sleep(3.0)
+        st = svc.status()
+        lr = st.get("last_reloc") or {}
+        print("t=%4.1f кадров=%s вокс=%s увер=%s курс=%5s° | reloc#=%s corr=%5s° "
+              "посл(δ=%s° margin=%s hits=%s) err=%s"
+              % (time.time() - t0, st.get("frames"), st.get("voxels"), st.get("confident"),
+                 st.get("heading_deg"), st.get("reloc_count"), st.get("reloc_corr_deg"),
+                 lr.get("delta_deg"), lr.get("margin"), lr.get("hits"), st.get("last_error") or "-"))
+    svc.stop()
+    time.sleep(0.3)
+    try:
+        os.remove(wp)
+    except OSError:
+        pass
+    print("\nИТОГ: reloc применено %d раз, итоговая поправка курса %.1f°"
+          % (svc.reloc_count, math.degrees(svc.pose.yaw_correction)))
+
+
+def reloctest():
+    """Детерминированная проверка РЕЛОКАЛИЗАЦИИ КУРСА ПО КАРТЕ (без платы).
+    Строим асимметричную карту-панораму, берём срез-скан в FoV, вносим известный
+    дрейф курса и проверяем, что relocalize_yaw находит δ ≈ −дрейф (де-дрейф гиро)."""
+    from world_service import relocalize_yaw
+    m = WorldModel(voxel_m=0.05)
+    # Различимая «панорама»: кластеры на РАЗНЫХ азимутах и дистанциях — жёсткий
+    # асимметричный узор, совпадает сам с собой только при δ=0 (в отличие от
+    # одиночной плоской стены, которая рот-неоднозначна и даёт размытый пик).
+    clusters = [(-25, 1.3), (-8, 0.7), (12, 1.6), (28, 0.9)]
+    world = []
+    for az_deg, dist in clusters:
+        a = math.radians(az_deg)
+        cx, cz = dist * math.sin(a), dist * math.cos(a)
+        for dx in (-0.03, 0.0, 0.03):
+            world.append((cx + dx, 0.0, cz))
+    for _ in range(2):                          # влить дважды -> уверенно
+        m.integrate_frame([(x, y, z, (180, 180, 180)) for (x, y, z) in world])
+    scan = list(world)                          # текущий скан = вся панорама (в FoV)
+    print("RELOCTEST: карта=%d вокс, скан=%d точек" % (len(m.vox), len(scan)))
+    ok_all = True
+    for drift_deg in (-12, -6, 6, 12):
+        rl = relocalize_yaw(m, scan, 0.0, 0.0, math.radians(drift_deg),
+                            window_deg=25, step_deg=1)
+        found = rl["delta_deg"] if rl else None
+        want = -drift_deg
+        good = bool(rl) and abs(found - want) <= 2.0
+        ok_all = ok_all and good
+        print("  дрейф=%+3d° -> δ=%s° (ждали %+d°) margin=%.2f hits=%d -> %s"
+              % (drift_deg, found, want, rl["margin"] if rl else 0,
+                 rl["hits"] if rl else 0, "OK" if good else "FAIL"))
+    print("RELOCTEST:", "OK" if ok_all else "FAIL")
+    return ok_all
+
+
 def selftest():
     """Проверка хранения без платы: синтетическое облако -> save -> load -> сверка."""
     m = WorldModel(voxel_m=0.05)
@@ -227,6 +295,8 @@ def selftest():
 
 
 def main(argv):
+    if "--reloctest" in argv:
+        sys.exit(0 if reloctest() else 1)
     if "--simtest" in argv:
         sys.exit(0 if simtest() else 1)
     if "--selftest" in argv:
@@ -245,6 +315,9 @@ def main(argv):
     cfg = CloudConfig(fov_h_deg=fov, fov_v_deg=fov)
     if "--track" in argv:
         run_track(ip, seconds if len(pos) > 1 else 20.0, cfg)
+        sys.exit(0)
+    if "--service" in argv:
+        run_service(ip, seconds if len(pos) > 1 else 30.0, cfg)
         sys.exit(0)
     ok = run_live(ip, seconds, cfg, use_cam)
     sys.exit(0 if ok else 1)

@@ -83,6 +83,31 @@ class WorldModel:
             out = out[::step]
         return out
 
+    def score_world_points(self, pts, l_thresh: float = L_CONFIDENT, radius: int = 1):
+        """Совпадение скана с картой (для релокализации курса по карте).
+        Для каждой МИРОВОЙ точки (x, y, z, ...) берём макс. log-odds уверенно
+        занятого вокселя в окрестности ±radius и суммируем. Чем выше score —
+        тем лучше точки ложатся на уже известную занятую геометрию.
+        Возвращает (score, hits)."""
+        m = self.voxel_m
+        score = 0.0
+        hits = 0
+        for p in pts:
+            ci = round(p[0] / m)
+            cj = round(p[1] / m)
+            ck = round(p[2] / m)
+            best = 0.0
+            for di in range(-radius, radius + 1):
+                for dj in range(-radius, radius + 1):
+                    for dk in range(-radius, radius + 1):
+                        v = self.vox.get((ci + di, cj + dj, ck + dk))
+                        if v is not None and v[0] >= l_thresh and v[0] > best:
+                            best = v[0]
+            if best > 0.0:
+                score += best
+                hits += 1
+        return score, hits
+
     def occupancy_2d(self, cell_m: float = 0.10, l_thresh: float = L_CONFIDENT):
         """Проекция на пол (плоскость XZ) -> {(gx,gz): max_logodds} для навигации."""
         grid = {}
