@@ -14,6 +14,7 @@
  *
  * Телеметрия: каждые ~1.5 с в Serial и GET /telemetry — MCU, память, flash/OTA, Wi‑Fi, BLE (LE), PDM‑микрофон Sense, AP (BSS), камера, RTOS.
  * Управление: GET /control?cam=0|1&mic=0|1&ble=0|1&wifi=0|1&drive=0|1 (wifi — эко‑сон радио).
+ *   tofprofile=accurate|balanced|fast|long|auto — профиль ToF (accurate=8×8 для плотной карты).
  * Привод: GET /drive?l=-255..255&r=...  или /drive?stop=1  (пины — drive_config.h).
  * ToF VL53L7CX (мультизонный): tof_mm в /telemetry — минимум по центральной полосе; сетка зон — GET /tof.
  * Сбор на ПК (по умолчанию): Wi‑Fi GET /telemetry → USB Serial → BLE (компактный JSON в GATT). Скрипт: tools/xiao_serial_telemetry.py
@@ -80,8 +81,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 23u;
-static constexpr char kXiaoFwVersion[] = "1.4.0";
+static constexpr uint32_t kXiaoFwBuild = 24u;
+static constexpr char kXiaoFwVersion[] = "1.4.1";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -1087,6 +1088,10 @@ static void handleControl() {
   if (server.hasArg("imuzero")) {
     xiaoImuZeroYaw();
   }
+  if (server.hasArg("tofprofile")) {
+    /* Принудительный профиль ToF: "accurate" = 8×8 (плотная карта), "auto" — вернуть авто. */
+    xiaoTofSetProfileByName(server.arg("tofprofile"));
+  }
 #if XIAO_DRIVE_ENABLE
   if (server.hasArg("drive")) {
     xiaoDriveSetEnabled(server.arg("drive").toInt() != 0);
@@ -1117,6 +1122,10 @@ static void handleControl() {
 #else
   j += F(",\"ctrl_drive\":0");
 #endif
+  j += F(",\"tof_profile\":\"");
+  j += xiaoTofProfileStr();
+  j += F("\",\"tof_auto\":");
+  j += xiaoTofAutoOn() ? F("1") : F("0");
   j += F("}");
   server.sendHeader(F("Cache-Control"), F("no-store"));
   server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));

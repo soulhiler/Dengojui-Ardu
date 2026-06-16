@@ -109,6 +109,23 @@ static void xiaoImuCalibrateBias(uint16_t samples = 200) {
 
 static inline void xiaoImuZeroYaw() { gImuYaw = 0.0f; }
 
+/** Разбудить и сконфигурировать MPU6050 (без долгой калибровки — годится для
+    авто-реинициализации в loop). gImuOk=true если запись прошла (сенсор ACK). */
+static void xiaoImuConfigure() {
+  if (!xiaoImuWrite(MPU_REG_PWR_MGMT_1, 0x01)) {  /* выйти из сна, clock = gyro X */
+    gImuOk = false;
+    return;
+  }
+  delay(10);
+  xiaoImuWrite(MPU_REG_SMPLRT_DIV, 0x04);   /* 1 кГц/(1+4) = 200 Гц */
+  xiaoImuWrite(MPU_REG_CONFIG, 0x03);       /* DLPF ~44 Гц — режет вибрацию моторов */
+  xiaoImuWrite(MPU_REG_GYRO_CONFIG, 0x00);  /* ±250 °/с */
+  xiaoImuWrite(MPU_REG_ACCEL_CONFIG, 0x00); /* ±2 g */
+  delay(10);
+  gImuOk = true;
+  gImuLastUs = micros();
+}
+
 static inline void xiaoImuInit() {
 #if !defined(XIAO_TOF_ENABLE) || !XIAO_TOF_ENABLE
   /* Если ToF выключен — шину поднимаем сами (иначе её уже поднял ToF). */
@@ -119,18 +136,11 @@ static inline void xiaoImuInit() {
   uint8_t who = 0;
   xiaoImuRead(MPU_REG_WHO_AM_I, &who, 1);
   /* MPU6050 → 0x68; клоны иногда 0x70/0x72/0x98 — не блокируем по WHO_AM_I жёстко. */
-  if (!xiaoImuWrite(MPU_REG_PWR_MGMT_1, 0x01)) {  /* выйти из сна, clock = gyro X */
-    gImuOk = false;
-    Serial.println(F("imu: MPU6050 не отвечает (адрес 0x68? питание 3V3? SDA/SCL?)"));
+  xiaoImuConfigure();
+  if (!gImuOk) {
+    Serial.println(F("imu: MPU6050 не отвечает (адрес 0x68? питание 3V3? SDA/SCL?) — ретрай в loop"));
     return;
   }
-  delay(10);
-  xiaoImuWrite(MPU_REG_SMPLRT_DIV, 0x04);   /* 1 кГц/(1+4) = 200 Гц */
-  xiaoImuWrite(MPU_REG_CONFIG, 0x03);       /* DLPF ~44 Гц — режет вибрацию моторов */
-  xiaoImuWrite(MPU_REG_GYRO_CONFIG, 0x00);  /* ±250 °/с */
-  xiaoImuWrite(MPU_REG_ACCEL_CONFIG, 0x00); /* ±2 g */
-  delay(20);
-  gImuOk = true;
   Serial.print(F("imu: MPU6050 OK (WHO_AM_I=0x"));
   Serial.print(who, HEX);
   Serial.println(F("), калибрую нуль гиро — не двигай ~0.6 с…"));
@@ -139,19 +149,49 @@ static inline void xiaoImuInit() {
 }
 
 static inline void xiaoImuTick() {
+  const uint32_t now = millis();
   if (!gImuOk) {
+    /* АВТО-ВОССТАНОВЛЕНИЕ: глитч питания (смена батарейки) подвешивает MPU6050 —
+       раз в 2 с пробуем переподнять (как ToF по LPn). */
+    static uint32_t lastRetry = 0;
+    if (now - lastRetry > 2000u) {
+      lastRetry = now;
+      xiaoImuConfigure();
+      if (gImuOk) {
+        Serial.println(F("imu: MPU6050 переинициализирован после сбоя"));
+      }
+    }
     return;
   }
   static uint32_t last = 0;
-  const uint32_t now = millis();
   if (now - last < 5) {  /* ~200 Гц предел; реально ограничен loop */
     return;
   }
   last = now;
   int16_t a[3], g[3], t;
+  static uint8_t failCount = 0;
   if (!xiaoImuReadRaw(a, &t, g)) {
+    if (++failCount >= 5) {     /* чтение стабильно не идёт — пометить мёртвым */
+      gImuOk = false;
+      failCount = 0;
+    }
     return;
   }
+  failCount = 0;
+  /* ЧЕСТНЫЙ imu_ok: живой MPU6050 всегда видит гравитацию (accel != 0). Все нули
+     подряд = сенсор завис/обесточен (после глитча) → пометить мёртвым, retry поднимет.
+     Раньше imu_ok оставался 1 при мёртвых нулях — это и путало диагностику. */
+  static uint8_t deadCount = 0;
+  if (a[0] == 0 && a[1] == 0 && a[2] == 0 && g[0] == 0 && g[1] == 0 && g[2] == 0) {
+    if (++deadCount >= 20) {
+      gImuOk = false;
+      deadCount = 0;
+      Serial.println(F("imu: MPU6050 отдаёт нули (глитч питания?) — реинициализация"));
+    }
+    return;
+  }
+  deadCount = 0;
+
   const uint32_t us = micros();
   float dt = (us - gImuLastUs) * 1e-6f;
   gImuLastUs = us;
@@ -161,7 +201,14 @@ static inline void xiaoImuTick() {
 
   gImuTempC = t / 340.0f + 36.53f;  /* формула из даташита MPU6050 */
 
-  const float gz = g[2] / kImuGyroLsb - gImuGzBias;  /* °/с */
+  const float rawGz = g[2] / kImuGyroLsb;  /* °/с до вычета смещения */
+  /* ZUPT bias tracker («No-Motion-No-Integration»): на стоянке медленно тянем нуль
+     гиро к сырому значению — компенсирует температурный дрейф смещения за сессию
+     (раньше bias брался только на старте). При вращении (|rawGz-bias|≥0.8) заморожен. */
+  if (rawGz - gImuGzBias < 0.8f && rawGz - gImuGzBias > -0.8f) {
+    gImuGzBias += 0.01f * (rawGz - gImuGzBias);
+  }
+  const float gz = rawGz - gImuGzBias;
   gImuGz = gz;
   /* Зона нечувствительности: гасит дрейф интеграла на стоянке (шум гиро). */
   if (gz > 0.3f || gz < -0.3f) {
