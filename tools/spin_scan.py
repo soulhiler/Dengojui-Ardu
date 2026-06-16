@@ -54,6 +54,12 @@ def stop():
         time.sleep(0.05)
 
 
+def set_tof_profile(name):
+    """Профиль ToF (прошивка ≥1.4.1): accurate=8×8 (64 зоны, плотнее карта), auto=вернуть.
+    На старых прошивках аргумент игнорируется — безвредно."""
+    _http("/control?tofprofile=%s" % name, timeout=3.0)
+
+
 def telem(retries=2):
     for _ in range(retries):
         raw = _http("/telemetry", timeout=2.5)
@@ -118,8 +124,10 @@ def main():
     if not ok:
         print("Импульс не поворачивает робота (PWM=%d). Питание моторов? Стоп." % pwm)
         return 1
-    print("Поворот PWM=%d, импульс %.2f c (~%.0f°/шаг). Старт скана.\n"
-          % (pwm, burst_dur, STEP_DEG))
+    set_tof_profile("accurate")   # 8×8 для плотной карты (прошивка ≥1.4.1)
+    tofj = telem()
+    print("Поворот PWM=%d, импульс %.2f c (~%.0f°/шаг). ToF res=%s. Старт скана.\n"
+          % (pwm, burst_dur, STEP_DEG, tofj.get("tof_res")))
 
     steps = 0
     frames = 0
@@ -163,6 +171,7 @@ def main():
     finally:
         stop()
         stop()
+        set_tof_profile("auto")   # вернуть авто-профиль ToF
 
     conf = confident(model)
     print("\nИТОГ: шагов=%d кадров=%d вокселей=%d уверенных=%d reloc=%d поправка_курса=%+.1f°"

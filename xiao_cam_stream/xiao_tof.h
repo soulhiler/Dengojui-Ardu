@@ -153,6 +153,7 @@ static void xiaoTofApplyProfile(XiaoTofProfile p, bool force = false) {
   uint8_t hz = 30; /* 4×4: до 60 Гц, 8×8: до 15 Гц */
   uint8_t mode = VL53L7CX_RANGING_MODE_CONTINUOUS;
   uint32_t integrationMs = 0; /* только для AUTONOMOUS */
+  uint8_t sharpener = 5;      /* % — дефолт ULD; больше = меньше «растекания» краёв в соседние зоны */
   switch (p) {
     case XIAO_TOF_FAST:
       hz = 60;
@@ -161,6 +162,7 @@ static void xiaoTofApplyProfile(XiaoTofProfile p, bool force = false) {
     case XIAO_TOF_ACCURATE:
       res = VL53L7CX_RESOLUTION_8X8;
       hz = 15;
+      sharpener = 14;  /* спец-значение даташита для 8×8 — чище геометрия для карты */
       gTofFilterTap = 3;
       break;
     case XIAO_TOF_LONG:
@@ -181,6 +183,7 @@ static void xiaoTofApplyProfile(XiaoTofProfile p, bool force = false) {
   /* CLOSEST: для объезда важнее ближайшая цель в зоне, а не самая яркая
      (дефолт сенсора — STRONGEST). Ставится при остановленном ranging. */
   gTof.vl53l7cx_set_target_order(VL53L7CX_TARGET_ORDER_CLOSEST);
+  gTof.vl53l7cx_set_sharpener_percent(sharpener);  /* меньше «veiling glare» между зонами */
   ok = ok && gTof.vl53l7cx_set_ranging_mode(mode) == 0;
   if (ok && integrationMs) {
     ok = gTof.vl53l7cx_set_integration_time_ms(integrationMs) == 0;
@@ -197,6 +200,34 @@ static void xiaoTofApplyProfile(XiaoTofProfile p, bool force = false) {
   gTofFilterReset = true;
   Serial.print(F("tof profile: "));
   Serial.println(xiaoTofProfileTag(p));
+}
+
+/** Принудительный профиль ToF из строки (HTTP /control?tofprofile=...). "auto" —
+    вернуть авто-режим; иначе выключить авто и форсить профиль. Для плотной КАРТЫ —
+    "accurate" (8×8, 64 зоны вместо 16). Возвращает false на неизвестном имени. */
+static inline bool xiaoTofSetProfileByName(const String &name) {
+  if (!gTofOk) {
+    return false;
+  }
+  if (name == "auto") {
+    gTofAuto = true;
+    return true;
+  }
+  XiaoTofProfile p;
+  if (name == "accurate" || name == "8x8") {
+    p = XIAO_TOF_ACCURATE;
+  } else if (name == "fast") {
+    p = XIAO_TOF_FAST;
+  } else if (name == "long") {
+    p = XIAO_TOF_LONG;
+  } else if (name == "balanced" || name == "bal" || name == "4x4") {
+    p = XIAO_TOF_BALANCED;
+  } else {
+    return false;
+  }
+  gTofAuto = false;
+  xiaoTofApplyProfile(p, true);
+  return true;
 }
 
 /**
@@ -697,6 +728,9 @@ static inline bool xiaoTofAutoOn() {
 }
 static inline const char *xiaoTofProfileStr() {
   return "off";
+}
+static inline bool xiaoTofSetProfileByName(const String &) {
+  return false;
 }
 static inline uint8_t xiaoTofRunScan360(uint8_t, XiaoScanPoint *, uint8_t) {
   return 0;
