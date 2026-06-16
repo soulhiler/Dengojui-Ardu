@@ -37,13 +37,17 @@ class WorldModel:
         m = self.voxel_m
         return (round(x / m), round(y / m), round(z / m))
 
-    def integrate_point(self, x, y, z, rgb, t):
+    def integrate_point(self, x, y, z, rgb, t, w: float = 1.0):
+        """w — вес наблюдения (0..1] по уверенности зоны (из ToF sigma): чистая
+        точка прибавляет полный L_HIT, шумная — меньше → уверенно занятые воксели
+        копятся от хорошей геометрии быстрее, мусор не «дорастает» до confident."""
+        add = L_HIT * w
         k = self._key(x, y, z)
         v = self.vox.get(k)
         if v is None:
-            self.vox[k] = [L_HIT, float(rgb[0]), float(rgb[1]), float(rgb[2]), 1, t]
+            self.vox[k] = [min(L_MAX, add), float(rgb[0]), float(rgb[1]), float(rgb[2]), 1, t]
         else:
-            v[0] = min(L_MAX, v[0] + L_HIT)
+            v[0] = min(L_MAX, v[0] + add)
             n = v[4] + 1
             a = 1.0 / min(n, _COLOR_SAT)  # бегущее среднее цвета
             v[1] += (rgb[0] - v[1]) * a
@@ -54,11 +58,13 @@ class WorldModel:
         self.updated = t
 
     def integrate_frame(self, pts) -> int:
-        """pts: итерабельно (x, y, z, (r,g,b)) в МИРОВЫХ координатах."""
+        """pts: итерабельно в МИРОВЫХ координатах — (x, y, z, rgb) или
+        (x, y, z, rgb, w), где w — вес наблюдения по уверенности (см. integrate_point)."""
         t = time.time()
         n = 0
-        for (x, y, z, rgb) in pts:
-            self.integrate_point(x, y, z, rgb, t)
+        for p in pts:
+            w = p[4] if len(p) > 4 else 1.0
+            self.integrate_point(p[0], p[1], p[2], p[3], t, w)
             n += 1
         return n
 
