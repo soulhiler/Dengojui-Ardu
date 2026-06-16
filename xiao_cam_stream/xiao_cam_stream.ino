@@ -81,8 +81,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 25u;
-static constexpr char kXiaoFwVersion[] = "1.4.2";
+static constexpr uint32_t kXiaoFwBuild = 26u;
+static constexpr char kXiaoFwVersion[] = "1.4.3";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -1507,6 +1507,7 @@ void loop() {
   xiaoTofTick();
   xiaoImuTick();
   xiaoAudioTick();
+  xiaoDriveSetFrontMm(xiaoTofMm());  // фронтальная дистанция → регулятор скорости
   xiaoDriveTick();
   statusLedTick();
   telemetryPrintSerialIfDue();

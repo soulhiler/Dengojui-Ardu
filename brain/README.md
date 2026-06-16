@@ -22,7 +22,7 @@ py -3 brain/brain.py 127.0.0.1 --dry-run --once   # решения без отп
 | `brain.py` | CLI + главный цикл, аварийный стоп при потере связи |
 | `robot.py` | клиент платы (`/telemetry`, `/capture`, `/drive`, токен) |
 | `perception.py` | `Recognizer` + `Dummy` / `Brightness` (модель — новой реализацией) |
-| `safety.py` | `SafetyGovernor` — рефлексы > перцепция, темп ≤ watchdog |
+| `safety.py` | `SafetyGovernor` — рефлексы > перцепция, темп ≤ watchdog, плавный регулятор скорости по фронтальному ToF (зеркало прошивки `safeSpeed`) |
 | `test_safety.py` | юнит-тесты governor (без железа) |
 
 ## Тесты
