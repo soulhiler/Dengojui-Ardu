@@ -839,6 +839,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
             <button type="button" id="btnWorldPause">Пауза</button>
             <button type="button" id="btnWorldSave">Сохранить</button>
             <button type="button" id="btnWorldClear">Очистить</button>
+            <button type="button" id="btnWorldRecenter" title="Принять текущий курс IMU за 0° (робот смотрит вперёд)">Курс=0</button>
           </div>
           <div style="margin-top:8px;font-size:0.8rem;color:#8b9cb3">ручной yaw, °:
             <input type="number" id="cloudYaw" value="0" step="15" style="width:64px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:2px 4px">
@@ -1362,7 +1363,11 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
             const err = j.last_error ? (" · "+j.last_error) : "";
             statusEl.textContent = run + " · кадров " + (j.frames??0) + age + err;
           }}
-          if (poseEl && j.pose) poseEl.textContent = "поза: x="+j.pose[0]+" z="+j.pose[1]+" yaw="+j.pose[2]+(j.have_odom?" (одометрия)":" (без одометрии)");
+          if (poseEl && j.pose) {{
+            const hd = (j.heading_deg!=null) ? j.heading_deg : Math.round((j.pose[2]||0)*57.3);
+            const src = j.have_imu ? " (курс IMU)" : (j.have_odom ? " (одометрия)" : " (без позы)");
+            poseEl.textContent = "поза: x="+j.pose[0]+" z="+j.pose[1]+" курс="+hd+"°"+src;
+          }}
         }} catch(e) {{}}
       }}
       cv.addEventListener("pointerdown", e => {{ drag=true; lx=e.clientX; ly=e.clientY; try {{ cv.setPointerCapture(e.pointerId); }} catch(_){{}} }});
@@ -1376,6 +1381,8 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
       if (bClr) bClr.onclick = async () => {{ if(!confirm("Очистить накопленную модель пространства?")) return; try {{ await fetch("/world/clear?_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} pts=[]; if(countEl) countEl.textContent="0"; if(confEl) confEl.textContent="0"; draw(); }};
       const bYaw = document.getElementById("btnWorldYaw");
       if (bYaw) bYaw.onclick = async () => {{ const y=parseFloat(document.getElementById("cloudYaw").value)||0; try {{ await fetch("/world/yaw?deg="+y+"&_ts="+Date.now(), {{cache:"no-store"}}); }} catch(e) {{}} if(statusEl) statusEl.textContent="ручной yaw → "+y+"°"; }};
+      const bRc = document.getElementById("btnWorldRecenter");
+      if (bRc) bRc.onclick = async () => {{ try {{ const r=await fetch("/world/recenter?_ts="+Date.now(), {{cache:"no-store"}}); const j=await r.json(); if(statusEl) statusEl.textContent = j.have_imu ? ("курс обнулён (был "+(j.was_deg)+"°)") : "курс=0 недоступен (нет IMU)"; }} catch(e) {{}} pollStatus(); }};
       // вид сверху (occupancy) — карта для ориентации: x вправо, z вперёд (вверх)
       const top = document.getElementById("worldTop");
       const tctx = top ? top.getContext("2d") : null;
@@ -1907,6 +1914,11 @@ def _run_http_mode(
                         if svc:
                             svc.pose.manual_yaw_deg = deg
                         _wjson({"ok": 1, "yaw_deg": deg})
+                    elif wsub.startswith("recenter"):
+                        # Принять текущий курс IMU за 0° (робот «смотрит вперёд»).
+                        was = svc.pose.recenter() if svc else None
+                        _wjson({"ok": 1, "have_imu": bool(svc and svc.pose.have_imu),
+                                "was_deg": was})
                     elif wsub.startswith("save"):
                         if wlock:
                             wlock.acquire()
