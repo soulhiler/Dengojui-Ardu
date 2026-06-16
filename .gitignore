@@ -34,4 +34,6 @@ Desktop.ini
 # Сгенерированная модель пространства и сырые сессии (не в репо)
 spatial/world/
 spatial/sessions/
+spatial/*.json.gz
+spatial/*.ply
 
