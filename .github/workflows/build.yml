@@ -29,8 +29,12 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32
       - name: Install Arduino libraries
-        # VL53L7CX (ST) — мультизонный ToF, нужен для xiao_tof.h (прошивка 1.3.x)
-        run: arduino-cli lib install "STM32duino VL53L7CX"
+        # VL53L7CX (ST) — мультизонный ToF (xiao_tof.h);
+        # SparkFun BNO08x — IMU курса (xiao_imu.h, прошивка 1.4.x). НЕ Adafruit:
+        # у того Adafruit_Sensor.h конфликтует с sensor_t драйвера камеры ESP32.
+        run: |
+          arduino-cli lib install "STM32duino VL53L7CX"
+          arduino-cli lib install "SparkFun BNO08x Cortex Based IMU"
       - name: Provide placeholder secrets.h
         run: cp xiao_cam_stream/secrets.h.example xiao_cam_stream/secrets.h
       - name: Compile xiao_cam_stream

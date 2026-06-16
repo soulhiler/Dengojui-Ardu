@@ -1362,7 +1362,7 @@ def _dashboard_html(port: int, com: str, mode_line: str, ui_session_rev: str) ->
             const err = j.last_error ? (" · "+j.last_error) : "";
             statusEl.textContent = run + " · кадров " + (j.frames??0) + age + err;
           }}
-          if (poseEl && j.pose) poseEl.textContent = "поза: x="+j.pose[0]+" z="+j.pose[1]+" yaw="+j.pose[2]+(j.have_odom?" (одометрия)":" (без одометрии)");
+          if (poseEl && j.pose) {{ const src = j.have_imu ? " (курс IMU)" : (j.have_odom ? " (одометрия)" : " (без позы)"); poseEl.textContent = "поза: x="+j.pose[0]+" z="+j.pose[1]+" yaw="+j.pose[2]+src; }}
         }} catch(e) {{}}
       }}
       cv.addEventListener("pointerdown", e => {{ drag=true; lx=e.clientX; ly=e.clientY; try {{ cv.setPointerCapture(e.pointerId); }} catch(_){{}} }});

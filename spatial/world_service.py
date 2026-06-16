@@ -52,9 +52,19 @@ class PoseEstimator:
         self._el = None
         self._er = None
         self.manual_yaw_deg = 0.0
+        self.yaw_offset_deg = 0.0   # калибровка нуля курса IMU («смотрит вперёд»)
         self.have_odom = False
+        self.have_imu = False
 
     def update(self, telem: dict) -> Pose:
+        # 1) Курс из IMU (абсолютный, BNO085 Game Rotation Vector) — приоритетнее
+        #    интегрированного гиро энкодеров: не копит дрейф.
+        iy = telem.get("imu_yaw")
+        if telem.get("imu_ok") in (1, "1", True) and isinstance(iy, (int, float)):
+            self.have_imu = True
+            self.yaw = math.radians(iy + self.yaw_offset_deg)
+        # 2) Перемещение по энкодерам (если идут); курс берём текущий (IMU если есть,
+        #    иначе интегрируем по разнице колёс).
         el = telem.get("enc_l")
         er = telem.get("enc_r")
         if isinstance(el, (int, float)) and isinstance(er, (int, float)):
@@ -63,8 +73,8 @@ class PoseEstimator:
                 dl = (el - self._el) / self.ticks_per_m
                 dr = (er - self._er) / self.ticks_per_m
                 d = (dl + dr) / 2.0
-                dyaw = (dr - dl) / self.wheel_base
-                self.yaw += dyaw
+                if not self.have_imu:
+                    self.yaw += (dr - dl) / self.wheel_base
                 self.x += d * math.sin(self.yaw)
                 self.z += d * math.cos(self.yaw)
             self._el = el
@@ -219,6 +229,7 @@ class WorldService:
             "last_added": self.last_added,
             "last_error": self.last_error,
             "have_odom": self.pose.have_odom,
+            "have_imu": self.pose.have_imu,
             "pose": [round(self.pose.x, 3), round(self.pose.z, 3), round(self.pose.yaw, 3)],
             "age_s": round(time.time() - self.last_t, 1) if self.last_t else None,
         })

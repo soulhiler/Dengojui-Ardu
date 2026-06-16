@@ -60,6 +60,14 @@
  *  дальним/тёмным целям. 15 — разумный старт. */
 #define XIAO_TOF_SIGMA_MAX_MM 15
 
+/** IMU BNO085 (инерционный датчик курса). На ТОЙ ЖЕ шине I2C, что ToF
+ *  (SDA=D9/GPIO8, SCL=D10/GPIO9). Адрес 0x4A ≠ ToF 0x29 — не конфликтуют.
+ *  Game Rotation Vector (без магнитометра). 0 — отключить.
+ *  Питание VIN→3V3, GND→GND, RST опц. на свободный GPIO (D7=44). */
+#define XIAO_IMU_ENABLE 1
+#define XIAO_IMU_ADDR 0x4A
+#define XIAO_IMU_RST_PIN -1   /* -1 = софт-сброс; иначе GPIO (например 44 = D7) */
+
 /** Звук через обмотки TB6612 (как uno_motor_test). */
 #define XIAO_AUDIO_ENABLE 1
 
