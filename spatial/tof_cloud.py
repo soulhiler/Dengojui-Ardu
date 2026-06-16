@@ -24,6 +24,8 @@ class CloudConfig:
     flip_v: bool = True       # и по вертикали (зона 0 = верх)
     min_mm: int = 20          # отбрасывать ближе (кросстолк <60см ненадёжен, но 20 — край)
     max_mm: int = 3500        # дальше — за пределами L7CX
+    sigma_max_mm: int = 0     # серверный отсев по ToF sigma (мм): 0 = не отсекать
+                              # (прошивка уже фильтрует), >0 = доп. строгий порог
 
 
 def _zone_angles(idx: int, res: int, fov_deg: float, flip: bool) -> float:
