@@ -258,14 +258,14 @@ def reloctest():
     for _ in range(2):                          # влить дважды -> уверенно
         m.integrate_frame([(x, y, z, (180, 180, 180)) for (x, y, z) in world])
     scan = list(world)                          # текущий скан = вся панорама (в FoV)
-    print("RELOCTEST: карта=%d вокс, скан=%d точек" % (len(m.vox), len(scan)))
+    print("RELOCTEST: карта=%d вокс, скан=%d точек (likelihood-field, coarse-to-fine)" % (len(m.vox), len(scan)))
     ok_all = True
-    for drift_deg in (-12, -6, 6, 12):
-        rl = relocalize_yaw(m, scan, 0.0, 0.0, math.radians(drift_deg),
-                            window_deg=25, step_deg=1)
+    # большие дрейфы тоже — проверяем захват coarse-to-fine; допуск суб-градусный
+    for drift_deg in (-22, -9, 7, 18):
+        rl = relocalize_yaw(m, scan, 0.0, 0.0, math.radians(drift_deg), window_deg=30)
         found = rl["delta_deg"] if rl else None
         want = -drift_deg
-        good = bool(rl) and abs(found - want) <= 2.0
+        good = bool(rl) and abs(found - want) <= 1.0
         ok_all = ok_all and good
         print("  дрейф=%+3d° -> δ=%s° (ждали %+d°) margin=%.2f hits=%d -> %s"
               % (drift_deg, found, want, rl["margin"] if rl else 0,
