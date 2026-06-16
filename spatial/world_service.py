@@ -158,40 +158,71 @@ def frame_to_world(tof: dict, jpeg: bytes, pose: Pose, cfg: CloudConfig):
 
 
 def relocalize_yaw(model: WorldModel, robot_pts, tx: float, tz: float, base_yaw: float,
-                   window_deg: float = 25.0, step_deg: float = 1.0,
-                   l_thresh: float = L_CONFIDENT):
-    """РЕЛОКАЛИЗАЦИЯ КУРСА ПО КАРТЕ. Ищет поправку δ (рад) в окне ±window_deg вокруг
-    base_yaw, при которой текущий скан (robot_pts: список (x, y, z) в кадре робота)
-    лучше всего ложится на уже известную занятую карту. Это де-дрейфит гиро:
-    поза ~1-DOF (turntable), поэтому перебор по одному углу устойчив.
+                   window_deg: float = 30.0, coarse_deg: float = 3.0,
+                   fine_deg: float = 0.5, sigma_m: float = 0.06):
+    """РЕЛОКАЛИЗАЦИЯ КУРСА ПО КАРТЕ (correlative scan matching, Olson 2009).
+    Ищет поправку δ (рад) вокруг base_yaw, при которой текущий скан (robot_pts:
+    (x,y,z) в кадре робота) лучше всего ложится на карту. Поза ~1-DOF (turntable),
+    поэтому перебор по одному углу.
 
-    Возвращает dict {delta_rad, delta_deg, score, margin, hits, n} или None, если
-    данных мало. margin = (пик − медиана)/пик — уверенность совпадения (0..1).
+    Метод: COARSE-TO-FINE по likelihood-field скору (гладкое поле, шире бассейн) +
+    ПАРАБОЛИЧЕСКАЯ интерполяция пика → суб-градусная точность. Грубый проход даёт
+    margin (уверенность пика); тонкий — точный угол.
+
+    Возвращает dict {delta_rad, delta_deg, score, margin, hits, n} или None.
+    margin = (пик − медиана)/пик ∈ [0..1] — насколько пик выделяется (для guard).
     """
     if not robot_pts:
         return None
-    n = int(round(window_deg / step_deg))
-    results = []
-    best_i, best_score, best_hits = 0, -1.0, 0
-    for i in range(-n, n + 1):
-        d = math.radians(i * step_deg)
-        p = Pose(yaw=base_yaw + d, tx=tx, tz=tz)
+
+    def score_at(deg):
+        p = Pose(yaw=base_yaw + math.radians(deg), tx=tx, tz=tz)
         wpts = [apply_pose(x, y, z, p) for (x, y, z) in robot_pts]
-        score, hits = model.score_world_points(wpts, l_thresh=l_thresh)
-        results.append(score)
-        if score > best_score:
-            best_score, best_i, best_hits = score, i, hits
-    if best_score <= 0.0:
+        return model.likelihood_score(wpts, sigma_m=sigma_m)
+
+    # --- грубый проход по всему окну ---
+    nc = max(1, int(round(window_deg / coarse_deg)))
+    coarse = []
+    best = (-1.0, 0.0, 0)        # (score, deg, hits)
+    for i in range(-nc, nc + 1):
+        deg = i * coarse_deg
+        s, h = score_at(deg)
+        coarse.append(s)
+        if s > best[0]:
+            best = (s, deg, h)
+    if best[0] <= 0.0:
         return None
-    ordered = sorted(results)
+    ordered = sorted(coarse)
     median = ordered[len(ordered) // 2]
-    margin = (best_score - median) / best_score if best_score > 0 else 0.0
+    margin = (best[0] - median) / best[0] if best[0] > 0 else 0.0
+
+    # --- тонкий проход вокруг грубого пика ---
+    nf = max(1, int(round(coarse_deg / fine_deg)))
+    fine = []
+    fbest_i, fbest = 0, (-1.0, 0.0, 0)
+    for k in range(-nf, nf + 1):
+        deg = best[1] + k * fine_deg
+        s, h = score_at(deg)
+        fine.append((deg, s))
+        if s > fbest[0]:
+            fbest, fbest_i = (s, deg, h), len(fine) - 1
+
+    # --- параболическая интерполяция вершины (суб-градус) ---
+    deg_best = fbest[1]
+    if 0 < fbest_i < len(fine) - 1:
+        sm, s0, sp = fine[fbest_i - 1][1], fine[fbest_i][1], fine[fbest_i + 1][1]
+        den = sm - 2.0 * s0 + sp
+        if den < 0.0:                      # вогнутость = настоящий максимум
+            off = 0.5 * (sm - sp) / den
+            off = max(-1.0, min(1.0, off))
+            deg_best = fine[fbest_i][0] + off * fine_deg
+
     return {
-        "delta_rad": math.radians(best_i * step_deg),
-        "delta_deg": round(best_i * step_deg, 1),
-        "score": round(best_score, 2),
+        "delta_rad": math.radians(deg_best),
+        "delta_deg": round(deg_best, 2),
+        "score": round(fbest[0], 2),
         "margin": round(margin, 3),
-        "hits": best_hits,
+        "hits": fbest[2],
         "n": len(robot_pts),
     }
 

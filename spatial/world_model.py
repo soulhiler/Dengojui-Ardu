@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -103,6 +104,38 @@ class WorldModel:
                         v = self.vox.get((ci + di, cj + dj, ck + dk))
                         if v is not None and v[0] >= l_thresh and v[0] > best:
                             best = v[0]
+            if best > 0.0:
+                score += best
+                hits += 1
+        return score, hits
+
+    def likelihood_score(self, pts, sigma_m: float = 0.06, radius: int = 2,
+                         l_min: float = 0.6):
+        """Likelihood-field скоринг скана по карте (Thrun, Probabilistic Robotics).
+        Вместо жёсткого «попал/не попал» (score_world_points) — ГЛАДКОЕ поле:
+        для каждой мировой точки берём макс. по окрестности ±radius величину
+        occ_logodds · exp(-d²/2σ²), где d — расстояние до занятого вокселя.
+        Шире бассейн сходимости, суб-вокс. точность, учитывает ВСЕ наблюдённые
+        воксели с весом по уверенности (мягкий порог l_min, не только confident).
+        Возвращает (score, hits)."""
+        m = self.voxel_m
+        inv2s2 = 1.0 / (2.0 * sigma_m * sigma_m)
+        score = 0.0
+        hits = 0
+        for p in pts:
+            ci = round(p[0] / m)
+            cj = round(p[1] / m)
+            ck = round(p[2] / m)
+            best = 0.0
+            for di in range(-radius, radius + 1):
+                for dj in range(-radius, radius + 1):
+                    for dk in range(-radius, radius + 1):
+                        v = self.vox.get((ci + di, cj + dj, ck + dk))
+                        if v is not None and v[0] >= l_min:
+                            d2 = (di * di + dj * dj + dk * dk) * m * m
+                            w = v[0] * math.exp(-d2 * inv2s2)
+                            if w > best:
+                                best = w
             if best > 0.0:
                 score += best
                 hits += 1
