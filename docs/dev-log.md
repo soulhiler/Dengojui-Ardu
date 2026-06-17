@@ -6,6 +6,42 @@
 
 ---
 
+## 2026-06-17 — Шов под секвенсор/LLM в brain/ (Фаза 2) + фикс CI публикации APK
+
+Фаза 2 заземления 3T-принципов: формализованы «примитивы-навыки» и подключаемый
+планировщик — место под Behavior Trees (F) и LLM-планировщик (H), без их полной
+реализации (премадженно на одном поведении).
+
+- **`brain/skills.py`:** навык-примитив = «инструмент на границе решать↔исполнять»
+  (A2): по телеметрии/кадру выдаёт `Intent`, моторов не трогает. Набор
+  `Stop/Forward/Turn(left,right)/Explore(обёртка распознавателя)/Avoid(реактивный
+  отворот по tof_mm)`; `SkillRegistry` — адресация по имени.
+- **`brain/planner.py`:** `NamedSkillPlanner(registry, policy)` тикает навык,
+  выбранный политикой `policy(ctx)->имя`. Политики: `sequence_policy` (секвенсор/
+  BT-lite по времени), `reactive_policy` (по сенсору), `make_llm_policy` (шов под
+  LLM: `ask(prompt)->ответ` инъектируется, имя навыка извлекается из ответа — без
+  сетевых зависимостей). Все три — один планировщик, меняется политика.
+- **`brain/brain.py`:** `--planner off|patrol|reactive` (off = старый путь
+  распознавателя, обратная совместимость). Граница соблюдена: навык → Intent →
+  `SafetyGovernor` (Фаза 1 режет скорость даже если навык газует к стене).
+- **Тесты:** `brain/test_skills.py` — 11 новых (навыки, реестр, секвенсор по
+  фейк-часам, реактив, LLM-шов с фейк-`ask`, прохождение через governor). Итого
+  **27/27 зелёные**. Smoke `--dry-run --once` для patrol/reactive/off — ок.
+
+**Фикс CI (android):** APK собирается, но шаг публикации в rolling-release
+`apk-latest` падал — `gh release create` → HTTP 422 «Published releases must have
+a valid tag» (окружение блокирует создание тегов/релизов, тот же запрет, что 403
+при ручном пуше тегов). Публикация APK — запасной канал (как `upload-artifact` с
+`continue-on-error`), добавил `continue-on-error` и шагу публикации. Последствие:
+пока теги заблокированы, `apk-latest` не обновляется автоматически; APK доступен
+как artifact сборки.
+
+Файлы: `brain/skills.py`(новый), `brain/planner.py`(новый),
+`brain/test_skills.py`(новый), `brain/brain.py`, `brain/README.md`,
+`.github/workflows/build.yml`.
+
+---
+
 ## 2026-06-16 — Регулятор скорости по фронтальному ToF (safeSpeed, fw 1.4.3)
 
 Фаза 1 заземления 3T-принципов (см. свод UGV/JARVIS): реакция на препятствие
