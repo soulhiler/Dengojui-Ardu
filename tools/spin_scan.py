@@ -125,9 +125,24 @@ def main():
         print("Импульс не поворачивает робота (PWM=%d). Питание моторов? Стоп." % pwm)
         return 1
     set_tof_profile("accurate")   # 8×8 для плотной карты (прошивка ≥1.4.1)
+
+    # СЕРВЕРНЫЙ ZUPT: ноль гиро после ребута может быть кривым (если робот двигался
+    # в момент калибровки на старте). Робот сейчас стоит — измеряем дрейф курса и
+    # дальше ВЫЧИТАЕМ его линейно (bias ~постоянен за скан). Не нужен идеальный ребут.
+    stop()
+    time.sleep(0.8)
+    ya = telem().get("imu_yaw")
+    time.sleep(4.0)
+    yb = telem().get("imu_yaw")
+    drift_t0 = time.time()
+    drift_rate = 0.0
+    if isinstance(ya, (int, float)) and isinstance(yb, (int, float)):
+        drift_rate = (((yb - ya + 180) % 360) - 180) / 4.0
     tofj = telem()
-    print("Поворот PWM=%d, импульс %.2f c (~%.0f°/шаг). ToF res=%s. Старт скана.\n"
-          % (pwm, burst_dur, STEP_DEG, tofj.get("tof_res")))
+    print("Дрейф нуля гиро = %.2f °/с -> компенсирую линейно. ToF res=%s."
+          % (drift_rate, tofj.get("tof_res")))
+    print("Поворот PWM=%d, импульс %.2f c (~%.0f°/шаг). Старт скана.\n"
+          % (pwm, burst_dur, STEP_DEG))
 
     steps = 0
     frames = 0
@@ -146,6 +161,9 @@ def main():
                 direction *= -1
             tl = telem()
             tf = tof()
+            iy = tl.get("imu_yaw")             # вычесть накопленный дрейф нуля гиро
+            if isinstance(iy, (int, float)):
+                tl["imu_yaw"] = iy - drift_rate * (time.time() - drift_t0)
             pose = pose_est.update(tl)
             res = int(tf.get("res", 8))
             grid = tf.get("grid") or []

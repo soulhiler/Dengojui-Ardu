@@ -38,5 +38,5 @@ spatial/world/
 spatial/sessions/
 spatial/*.json.gz
 spatial/*.ply
-spatial/_*.json
+spatial/_*
 
