@@ -112,8 +112,12 @@ class DepthAnythingBackend:
 
     def _ensure(self):
         if self._pipe is None:
+            import os
+            os.environ.setdefault("HF_HUB_DISABLE_XET", "1")  # xet-загрузка ломала preprocessor
             from transformers import pipeline  # ленивый: не нужен для тестов/без GPU
-            self._pipe = pipeline("depth-estimation", model=self.model_id, device=self.device)
+            # use_fast=False: у модели нет fast (torchvision) image-processor (transformers 5.x).
+            self._pipe = pipeline("depth-estimation", model=self.model_id,
+                                  device=self.device, use_fast=False)
         return self._pipe
 
     def infer(self, image_pil):
