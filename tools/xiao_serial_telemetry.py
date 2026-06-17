@@ -61,6 +61,7 @@ _CLOUD = {
 # Автономная персистентная модель пространства (сервис стартует в _run_http_mode).
 _WORLD = WorldModel(voxel_m=0.05) if _HAVE_SPATIAL else None
 _WORLD_SVC = None  # WorldService — создаётся при старте HTTP
+_WORLD_PAUSED_START = False  # --world-paused: загрузить карту, но не вливать live-кадры
 _WORLD_PATH = os.path.join(_SPATIAL_DIR, "world", "room.world.gz")
 _WORLD_SESSIONS = os.path.join(_SPATIAL_DIR, "sessions")
 
@@ -1728,8 +1729,11 @@ def _run_http_mode(
             sessions_dir=_WORLD_SESSIONS,
             interval_s=2.0,
         )
+        if _WORLD_PAUSED_START:
+            _WORLD_SVC.set_paused(True)   # показ карты без порчи live-дрейфом гиро
         _WORLD_SVC.start()
-        sys.stderr.write("world: автономный сервис модели пространства запущен (интервал 2с)\n")
+        sys.stderr.write("world: автономный сервис модели пространства запущен (интервал 2с%s)\n"
+                         % (", НА ПАУЗЕ" if _WORLD_PAUSED_START else ""))
 
     parts: list[str] = []
     if start_wifi:
@@ -2375,7 +2379,15 @@ def main() -> int:
         default="beb5483e-36e1-4688-b7f7-eaa05907848d",
         help="UUID GATT с компактным JSON (см. xiao_cam_stream.ino)",
     )
+    ap.add_argument(
+        "--world-paused",
+        action="store_true",
+        help="Загрузить карту, но НЕ вливать live-кадры (показ построенной карты без порчи дрейфом гиро)",
+    )
     args = ap.parse_args()
+
+    global _WORLD_PAUSED_START
+    _WORLD_PAUSED_START = bool(args.world_paused)
 
     try:
         import serial  # noqa: F401
