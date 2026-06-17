@@ -15,8 +15,10 @@ tools/arduino-cli/
 xiao_cam_stream/build/
 xiao_cam_stream/build_out/
 
-# Claude worktrees (локально)
-.claude/
+# Claude worktrees / личные настройки (локально)
+.claude/*
+!.claude/settings.json
+.claude/settings.local.json
 
 # Логи
 tools/_tel_err.txt

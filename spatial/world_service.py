@@ -134,12 +134,33 @@ class PoseEstimator:
         return self._compose_pose()
 
 
+# Вес наблюдения по ToF-sigma: чистая зона (низкая sigma) весит полный 1.0,
+# шумная — меньше (но не ноль, т.к. прошивка её уже пропустила). Пол гасит
+# чрезмерное доверие к шумной зоне, не выбрасывая её совсем.
+_SIGMA_HALF_MM = 10.0   # sigma, при которой вес = 0.5
+_WEIGHT_FLOOR = 0.3     # минимальный вес прошедшей фильтр зоны
+
+
+def conf_from_sigma(sigma_mm) -> float:
+    """ToF range_sigma_mm -> вес наблюдения (0.3..1.0). sigma<0/None -> 1.0
+    (нет данных уверенности — старая прошивка/выключенное поле → нейтрально)."""
+    if sigma_mm is None or sigma_mm < 0:
+        return 1.0
+    s = float(sigma_mm)
+    w = 1.0 / (1.0 + (s / _SIGMA_HALF_MM) ** 2)
+    return _WEIGHT_FLOOR + (1.0 - _WEIGHT_FLOOR) * w
+
+
 def frame_to_world(tof: dict, jpeg: bytes, pose: Pose, cfg: CloudConfig):
-    """Кадр (ToF-сетка + JPEG) + поза -> генератор (x, y, z, (r,g,b)) в мире."""
+    """Кадр (ToF-сетка + JPEG) + поза -> генератор (x, y, z, (r,g,b), w) в мире,
+    где w — вес наблюдения по уверенности зоны (ToF sigma). Опц. серверный отсев
+    шумных зон по cfg.sigma_max_mm."""
     res = int(tof.get("res", 8))
     grid = tof.get("grid")
     if not grid or len(grid) < res * res:
         return
+    sigma = tof.get("sigma")
+    has_sigma = isinstance(sigma, list) and len(sigma) >= res * res
     img = None
     if _HAVE_PIL and jpeg:
         try:
@@ -148,13 +169,16 @@ def frame_to_world(tof: dict, jpeg: bytes, pose: Pose, cfg: CloudConfig):
             img = None
     w, h = (img.size if img is not None else (0, 0))
     for (r, c, x, y, z) in grid_to_points(grid, res, cfg):
+        s = sigma[r * res + c] if has_sigma else None
+        if cfg.sigma_max_mm > 0 and s is not None and s >= 0 and s > cfg.sigma_max_mm:
+            continue  # серверный строгий отсев шумной зоны
         if img is not None:
             u, v = zone_pixel(r, c, res, w, h, cfg)
             rgb = img.getpixel((u, v))
         else:
             rgb = _dist_color(z)
         wx, wy, wz = apply_pose(x, y, z, pose)
-        yield (wx, wy, wz, rgb)
+        yield (wx, wy, wz, rgb, conf_from_sigma(s))
 
 
 def relocalize_yaw(model: WorldModel, robot_pts, tx: float, tz: float, base_yaw: float,

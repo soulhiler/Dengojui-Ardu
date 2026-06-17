@@ -21,6 +21,7 @@
 | `docs/security-history-cleanup.md` | Runbook чистки утёкшего Wi‑Fi пароля из git‑истории |
 | `docs/cursor-chat-archives/` | Архив переписок Cursor (`.jsonl` + `.zip`) |
 | `docs/hardware/wiring-xiao-motor-tof.md` | **Схема:** XIAO + TB6612 + VL53L7CX (пины, питание, GND, LPn) |
+| `docs/hardware/` | **Анализ железа:** распайка, сенсоры/моторы, платы MCU/SBC, ориентация и модель пространства ([индекс](docs/hardware/README.md)) |
 | `docs/incident-wifi-pc-router-2026-06-05.md` | Отчёт: сбой Wi‑Fi ПК / роутер Duangdeehouse2 / отладка XIAO (июнь 2026) |
 | `tools/fix_pc_wifi_dihouse.ps1` | Восстановление профилей Duangdeehouse2 на ПК (запуск от администратора) |
 | `tools/xiao_cam_proxy.py` | Прокси с платы на `localhost` (Cursor/браузер) |

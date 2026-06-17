@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="840" viewBox="0 0 1180 840" font-family="Segoe UI, system-ui, sans-serif">
+  <rect width="1180" height="840" fill="#0f1419"/>
+  <text x="32" y="44" fill="#e6edf3" font-size="26" font-weight="700">Деньгожуй — схема подключения (Путь B: гибрид XIAO + Raspberry Pi)</text>
+  <text x="32" y="72" fill="#8b949e" font-size="15">XIAO = моторика реального времени (без переразводки) · Raspberry Pi = сенсоры, зрение, навигация</text>
+
+  <!-- ===================== POWER ===================== -->
+  <g>
+    <rect x="32" y="110" width="190" height="74" rx="10" fill="#3a2a12" stroke="#e3a857" stroke-width="2"/>
+    <text x="127" y="142" fill="#f0c27b" font-size="16" font-weight="700" text-anchor="middle">Аккумулятор</text>
+    <text x="127" y="164" fill="#d8b483" font-size="13" text-anchor="middle">2S Li-ion · 7.4 В</text>
+
+    <rect x="32" y="226" width="190" height="62" rx="10" fill="#3a2a12" stroke="#e3a857" stroke-width="2"/>
+    <text x="127" y="252" fill="#f0c27b" font-size="15" font-weight="700" text-anchor="middle">DC-DC buck → 5 В</text>
+    <text x="127" y="272" fill="#d8b483" font-size="12" text-anchor="middle">≥3 A (запас Pi + LiDAR)</text>
+  </g>
+
+  <!-- battery -> buck -->
+  <line x1="127" y1="184" x2="127" y2="226" stroke="#e3a857" stroke-width="2.5"/>
+  <text x="135" y="210" fill="#d8b483" font-size="12">Vin</text>
+
+  <!-- ===================== DRIVER + MOTORS ===================== -->
+  <g>
+    <rect x="300" y="110" width="200" height="84" rx="10" fill="#13314f" stroke="#5aa9f0" stroke-width="2"/>
+    <text x="400" y="140" fill="#9ed0ff" font-size="16" font-weight="700" text-anchor="middle">TB6612FNG</text>
+    <text x="400" y="162" fill="#bcd6f2" font-size="12" text-anchor="middle">драйвер моторов</text>
+    <text x="400" y="181" fill="#7fa9d6" font-size="11" text-anchor="middle">VM·VCC 3V3·STBY·GND</text>
+
+    <rect x="540" y="112" width="86" height="36" rx="8" fill="#13314f" stroke="#5aa9f0" stroke-width="1.6"/>
+    <text x="583" y="135" fill="#bcd6f2" font-size="13" text-anchor="middle">мотор L</text>
+    <rect x="540" y="156" width="86" height="36" rx="8" fill="#13314f" stroke="#5aa9f0" stroke-width="1.6"/>
+    <text x="583" y="179" fill="#bcd6f2" font-size="13" text-anchor="middle">мотор R</text>
+  </g>
+
+  <!-- battery VM -> driver -->
+  <path d="M222 138 H 300" stroke="#e3a857" stroke-width="2.5" fill="none"/>
+  <text x="246" y="130" fill="#d8b483" font-size="12">VM</text>
+  <!-- driver -> motors -->
+  <line x1="500" y1="130" x2="540" y2="130" stroke="#5aa9f0" stroke-width="2"/>
+  <line x1="500" y1="174" x2="540" y2="174" stroke="#5aa9f0" stroke-width="2"/>
+
+  <!-- ===================== XIAO ===================== -->
+  <g>
+    <rect x="300" y="320" width="220" height="150" rx="12" fill="#123a1d" stroke="#56d364" stroke-width="2.4"/>
+    <text x="410" y="350" fill="#7ee787" font-size="18" font-weight="700" text-anchor="middle">XIAO ESP32-S3</text>
+    <text x="410" y="372" fill="#9fe0a6" font-size="13" text-anchor="middle">Sense (камера + PDM-мик)</text>
+    <text x="410" y="398" fill="#bdebc2" font-size="12" text-anchor="middle">D0–D5 → TB6612 (6 сигн.)</text>
+    <text x="410" y="418" fill="#bdebc2" font-size="12" text-anchor="middle">D6–D9 → энкодеры (4)</text>
+    <text x="410" y="438" fill="#bdebc2" font-size="12" text-anchor="middle">D10 → бампер (опц.)</text>
+    <text x="410" y="458" fill="#7fae86" font-size="11" text-anchor="middle">реальное время + watchdog 450 мс</text>
+  </g>
+
+  <!-- driver <-> XIAO : 6 logic -->
+  <path d="M400 194 V 320" stroke="#56d364" stroke-width="2.4" fill="none"/>
+  <text x="408" y="262" fill="#9fe0a6" font-size="12">6 лог. сигналов</text>
+  <text x="408" y="280" fill="#7fae86" font-size="11">PWMA/B + AIN/BIN (D0–D5)</text>
+
+  <!-- ===================== ENCODERS ===================== -->
+  <g>
+    <rect x="300" y="520" width="220" height="48" rx="10" fill="#123a1d" stroke="#56d364" stroke-width="1.8"/>
+    <text x="410" y="549" fill="#9fe0a6" font-size="14" text-anchor="middle">энкодеры L/R (квадратурные)</text>
+  </g>
+  <path d="M410 470 V 520" stroke="#56d364" stroke-width="2" fill="none"/>
+  <text x="418" y="500" fill="#7fae86" font-size="11">4 канала (D6–D9)</text>
+
+  <!-- buck -> XIAO 5V -->
+  <path d="M127 288 V 600 H 300" stroke="#e3a857" stroke-width="2" fill="none" stroke-dasharray="6 4"/>
+  <text x="150" y="592" fill="#d8b483" font-size="12">5 В → XIAO</text>
+
+  <!-- ===================== RASPBERRY PI ===================== -->
+  <g>
+    <rect x="600" y="300" width="220" height="210" rx="12" fill="#3a1620" stroke="#f07178" stroke-width="2.4"/>
+    <text x="710" y="332" fill="#ff9aa0" font-size="18" font-weight="700" text-anchor="middle">Raspberry Pi</text>
+    <text x="710" y="354" fill="#f3b6ba" font-size="13" text-anchor="middle">Zero 2 W  (+ CSI-камера)</text>
+    <text x="710" y="382" fill="#f3c9cc" font-size="12" text-anchor="middle">зрение / CV / автономия</text>
+    <text x="710" y="402" fill="#f3c9cc" font-size="12" text-anchor="middle">SLAM · Nav2 · веб-UI · стрим</text>
+    <line x1="620" y1="416" x2="800" y2="416" stroke="#7a3b41" stroke-width="1"/>
+    <text x="710" y="436" fill="#f3c9cc" font-size="12" text-anchor="middle">шины: I²C · SPI · UART · USB</text>
+    <text x="710" y="456" fill="#cf9296" font-size="11" text-anchor="middle">40-pin GPIO + 2× USB</text>
+    <text x="710" y="486" fill="#cf9296" font-size="11" text-anchor="middle">питание 5 В</text>
+  </g>
+
+  <!-- XIAO <-> Pi link -->
+  <path d="M520 395 H 600" stroke="#c9a0ff" stroke-width="2.6" fill="none"/>
+  <text x="528" y="386" fill="#c9a0ff" font-size="12">Wi-Fi (этап 1)</text>
+  <text x="528" y="412" fill="#a98fd6" font-size="11">USB-serial (этап 2)</text>
+
+  <!-- buck -> Pi 5V -->
+  <path d="M222 257 H 260 V 600 H 600 V 510" stroke="#e3a857" stroke-width="2" fill="none" stroke-dasharray="6 4"/>
+  <text x="470" y="592" fill="#d8b483" font-size="12">5 В → Pi (и LiDAR)</text>
+
+  <!-- ===================== SENSORS ===================== -->
+  <g font-size="12.5">
+    <rect x="900" y="96" width="248" height="60" rx="9" fill="#241a3a" stroke="#b692f0" stroke-width="1.8"/>
+    <text x="912" y="120" fill="#d2bcff" font-weight="700">TCA9548A → ToF</text>
+    <text x="912" y="140" fill="#b9a3e0">VL53L5CX (фронт) · L1X (бока) · L0X (вниз)</text>
+
+    <rect x="900" y="168" width="248" height="44" rx="9" fill="#241a3a" stroke="#b692f0" stroke-width="1.8"/>
+    <text x="912" y="195" fill="#d2bcff" font-weight="700">INA226 <tspan fill="#b9a3e0" font-weight="400">— ток/напряж. батареи</tspan></text>
+
+    <rect x="900" y="224" width="248" height="44" rx="9" fill="#241a3a" stroke="#b692f0" stroke-width="1.8"/>
+    <text x="912" y="251" fill="#d2bcff" font-weight="700">BME280 · BH1750 <tspan fill="#b9a3e0" font-weight="400">— среда</tspan></text>
+
+    <rect x="900" y="296" width="248" height="44" rx="9" fill="#241a3a" stroke="#7ee0c0" stroke-width="1.8"/>
+    <text x="912" y="323" fill="#9af0d4" font-weight="700">BNO085 IMU <tspan fill="#7fbfa8" font-weight="400">(SPI / UART-RVC)</tspan></text>
+
+    <rect x="900" y="352" width="248" height="44" rx="9" fill="#241a3a" stroke="#8ec7ff" stroke-width="1.8"/>
+    <text x="912" y="379" fill="#b0d8ff" font-weight="700">2D-LiDAR <tspan fill="#8aa9c8" font-weight="400">RPLIDAR C1 / LD19 (UART)</tspan></text>
+
+    <rect x="900" y="408" width="248" height="44" rx="9" fill="#241a3a" stroke="#8ec7ff" stroke-width="1.8"/>
+    <text x="912" y="435" fill="#b0d8ff" font-weight="700">GPS NEO-M8N <tspan fill="#8aa9c8" font-weight="400">(UART, улица)</tspan></text>
+
+    <rect x="900" y="464" width="248" height="44" rx="9" fill="#241a3a" stroke="#f0c27b" stroke-width="1.8"/>
+    <text x="912" y="491" fill="#f0c98e" font-weight="700">OAK-D / RealSense <tspan fill="#c8a878" font-weight="400">depth (USB)</tspan></text>
+  </g>
+
+  <!-- Pi -> sensors bus lines -->
+  <g fill="none" stroke-width="2">
+    <path d="M820 360 H 860 V 126 H 900" stroke="#b692f0"/>
+    <path d="M820 366 H 854 V 190 H 900" stroke="#b692f0"/>
+    <path d="M820 372 H 848 V 246 H 900" stroke="#b692f0"/>
+    <path d="M820 392 H 880 V 318 H 900" stroke="#7ee0c0"/>
+    <path d="M820 410 H 874 V 374 H 900" stroke="#8ec7ff"/>
+    <path d="M820 420 H 868 V 430 H 900" stroke="#8ec7ff"/>
+    <path d="M820 440 H 862 V 486 H 900" stroke="#f0c27b"/>
+  </g>
+  <text x="864" y="150" fill="#b9a3e0" font-size="11">I²C (GPIO2/3)</text>
+  <text x="884" y="306" fill="#7fbfa8" font-size="11">SPI</text>
+  <text x="878" y="362" fill="#8aa9c8" font-size="11">UART</text>
+  <text x="866" y="476" fill="#c8a878" font-size="11">USB</text>
+
+  <!-- ===================== LEGEND / GND ===================== -->
+  <g font-size="12">
+    <rect x="32" y="700" width="1116" height="104" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+    <text x="48" y="726" fill="#e6edf3" font-size="14" font-weight="700">Питание и земля</text>
+    <text x="48" y="750" fill="#d8b483">— сплошное оранжевое: VM (моторы, 7.4 В) ·  пунктир оранжевое: 5 В-рейл (Pi, XIAO, LiDAR)</text>
+    <text x="48" y="772" fill="#9fe0a6">— XIAO 3V3 → TB6612 VCC/STBY ·  Pi 3V3 → I²C-датчики (ToF/IMU/INA/BME/BH1750)</text>
+    <text x="48" y="794" fill="#f07178" font-weight="700">⚠ Единая общая земля (GND) для всех узлов: аккумулятор · драйвер · XIAO · Pi · сенсоры</text>
+  </g>
+</svg>

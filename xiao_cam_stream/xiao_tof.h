@@ -67,6 +67,7 @@ static VL53L7CX gTof(&Wire, XIAO_TOF_LPN_PIN, XIAO_TOF_I2C_RST_PIN);
 static VL53L7CX_ResultsData gTofResults;
 static uint8_t gTofZones = VL53L7CX_RESOLUTION_4X4; /* 16 или 64 */
 static int16_t gTofGrid[VL53L7CX_RESOLUTION_8X8];   /* мм по зонам, -1 = нет цели */
+static int16_t gTofSigma[VL53L7CX_RESOLUTION_8X8];  /* range_sigma_mm валидной зоны (мм), -1 = нет/неизв. */
 
 /* Обнаружение пола/обрыва по обучаемому эталону (не нужно знать высоту/угол).
    Калибровка на ровном полу снимает дистанции по зонам в gTofFloorRef.
@@ -248,14 +249,22 @@ static uint16_t xiaoTofFrameCenterMin() {
     /* range_sigma_mm уже в мм (ULD делит на 128). Высокая sigma = шумной/
        ненадёжный замер; отсекаем — иначе «дрожащая» зона даёт ложный
        выброс вниз, а tof_mm = минимум → ложный стоп. 0 = очень точно. */
+#if !defined(VL53L7CX_DISABLE_RANGE_SIGMA_MM)
+    const int16_t sigmaMm = static_cast<int16_t>(gTofResults.range_sigma_mm[idx]);
+#else
+    const int16_t sigmaMm = 0;  /* поле sigma отключено в сборке ULD */
+#endif
 #if !defined(VL53L7CX_DISABLE_RANGE_SIGMA_MM) && (XIAO_TOF_SIGMA_MAX_MM > 0)
-    const bool sigmaOk = gTofResults.range_sigma_mm[idx] <= XIAO_TOF_SIGMA_MAX_MM;
+    const bool sigmaOk = sigmaMm <= XIAO_TOF_SIGMA_MAX_MM;
 #else
     const bool sigmaOk = true;  /* фильтр выключен (порог 0) или поле отключено */
 #endif
     const bool valid = gTofResults.nb_target_detected[z] > 0 && (st == 5 || st == 9) && d > 0 &&
                        sigmaOk && xiaoTofValidMm(static_cast<uint16_t>(d));
     gTofGrid[z] = valid ? d : -1;
+    /* Уверенность зоны на сервер: чистая (низкая sigma) точка весит больше при
+       накоплении карты (см. spatial/world_service.py). -1 = нет валидной цели. */
+    gTofSigma[z] = valid ? sigmaMm : -1;
     const uint8_t row = z / side;
     if (valid && row >= rowFrom && row < rowTo) {
       if (!best || static_cast<uint16_t>(d) < best) {
@@ -421,6 +430,7 @@ static inline void xiaoTofInit() {
   if (gTofOk) {
     for (uint8_t z = 0; z < VL53L7CX_RESOLUTION_8X8; ++z) {
       gTofGrid[z] = -1;
+      gTofSigma[z] = -1;
     }
     gTofProfile = XIAO_TOF_BALANCED;
     xiaoTofApplyProfile(XIAO_TOF_BALANCED, true);
@@ -697,6 +707,15 @@ static inline void xiaoTofGridJson(String &j) {
       j += ',';
     }
     j += gTofCls[z];
+  }
+  /* Уверенность зоны: range_sigma_mm (мм) валидной зоны, -1 = нет/неизв. Сервер
+     взвешивает вклад точки в карту по sigma (чистая зона = больший вес). */
+  j += F("],\"sigma\":[");
+  for (uint8_t z = 0; z < zones; ++z) {
+    if (z) {
+      j += ',';
+    }
+    j += gTofSigma[z];
   }
   j += F("]}");
 }
