@@ -8,7 +8,11 @@
 ToF+курс (без моторного шума — чище данные) → влить в карту → релокализация курса
 по карте (де-дрейф гиро) → повтор. По завершении/ошибке/Ctrl-C → гарантированный стоп.
 
-Запуск:  python tools/spin_scan.py [IP] [секунд]
+Запуск:  python tools/spin_scan.py [IP] [секунд] [--dense]
+  --dense: на каждом шаге вливать ПЛОТНУЮ глубину из видео (Depth Anything × ToF,
+  ~8000 точек/кадр вместо 64) → плотная цветная панорама. Нужен torch+transformers
+  (см. spatial/dense_fuse.py); CPU — медленно (~секунды/шаг), робот стоит во время
+  инференса. Без флага — обычный разрежённый ToF-скан.
 """
 import json
 import math
@@ -34,6 +38,14 @@ RELOC_EVERY = 3         # релокализация раз в N шагов
 RELOC_GAIN = 0.25
 RELOC_MIN_CONF = 30     # порог демо-скана (у сервиса дефолт 40); guard по margin защищает
 RELOC_MIN_MARGIN = 0.35
+
+DENSE = "--dense" in sys.argv       # плотная глубина из ВИДЕО (Depth Anything × ToF) вместо 64 ToF-зон
+CAM_HFOV = 65.0                     # FoV камеры OV2640 для интринсиков
+DF = None
+if DENSE:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")        # сеть HF флапает — грузим из кэша
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    import depth_fusion as DF                            # noqa: E402
 
 
 def _http(path, timeout=4.0):
@@ -80,6 +92,15 @@ def tof(retries=2):
             except Exception:
                 pass
     return {}
+
+
+def capture(retries=2):
+    """JPEG-кадр с камеры (для плотной глубины). b'' если не пришёл."""
+    for _ in range(retries):
+        raw = _http("/capture", timeout=8.0)
+        if raw:
+            return raw
+    return b""
 
 
 def burst(pwm, direction, dur=BURST_S):
@@ -144,6 +165,12 @@ def main():
     print("Поворот PWM=%d, импульс %.2f c (~%.0f°/шаг). Старт скана.\n"
           % (pwm, burst_dur, STEP_DEG))
 
+    backend = None
+    if DENSE:
+        backend = DF.DepthAnythingBackend()
+        print("ПЛОТНЫЙ режим: Depth Anything V2 (~8000 точек/кадр вместо 64). "
+              "Первый кадр грузит модель (CPU — медленно)…\n")
+
     steps = 0
     frames = 0
     reloc_n = 0
@@ -177,8 +204,15 @@ def main():
                         pose_est.nudge_yaw(rl["delta_rad"], RELOC_GAIN)
                         reloc_n += 1
                         pose = pose_est.peek_pose()
-                model.integrate_frame(list(frame_to_world(tf, b"", pose, cfg)))
-                frames += 1
+                if DENSE and backend is not None:
+                    jpeg = capture()                          # плотная глубина из видео
+                    if jpeg:
+                        model.integrate_frame(list(
+                            DF.frame_to_dense_world(jpeg, tf, pose, backend, cam_hfov_deg=CAM_HFOV)))
+                        frames += 1
+                else:
+                    model.integrate_frame(list(frame_to_world(tf, b"", pose, cfg)))
+                    frames += 1
             now = time.time()
             if now - last_report > 4.0:
                 last_report = now
