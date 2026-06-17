@@ -97,13 +97,27 @@ py -3 spatial/calibrate_live.py <IP> --track  # калибровка знака 
 (аффинный МНК), и плотное цветное облако. См. конвейер в
 `docs/hardware/camera-tof-spatial-model.md`.
 
-## Этап 2 — плотная глубина (`depth_fusion.py`)
+## Этап 2/A — плотная глубина из ВИДЕО (`depth_fusion.py`, `dense_fuse.py`)
 
-Моно-сеть (Depth Anything) → относительная глубина; 64 ToF-зоны задают
-метрический масштаб аффинным fit `1/Z = s·rel + b` (`fit_scale_shift`, МНК 2×2,
-опц. RANSAC). Бэкенд подключаемый (`DepthAnythingBackend` — ленивый torch;
-`SynthBackend` — тест). `densify_to_points()` → плотное облако (нужен numpy +
-калибровка камеры). Тяжёлое — на сервере с GPU/Jetson. Самотест: `py -3 spatial/depth_fusion.py`.
+**Видео несёт геометрию, а не только цвет.** Моно-сеть (Depth Anything V2) →
+относит. глубина; 64 ToF-зоны задают метрический масштаб аффинным fit
+`1/Z = s·rel + b` (`fit_scale_shift`, МНК 2×2, опц. RANSAC); `frame_to_dense_world()`
+→ **тысячи цветных метрических МИРОВЫХ точек/кадр** (вместо 64 ToF-зон), готовых
+к вливанию в `WorldModel`. Интринсики камеры из FoV (`intrinsics_from_fov`,
+OV2640 ~65°). Бэкенд подключаемый: `SynthBackend` (без torch — форма синтет.,
+цвет/масштаб/поза реальные) или `DepthAnythingBackend` (нужен `pip install torch
+transformers`; GPU/Jetson желательно).
+
+Драйвер `dense_fuse.py` (грабит RGB+ToF → плотный воксель-мир, сравнение
+sparse↔dense, PLY):
+```bash
+py -3 spatial/dense_fuse.py --selftest                 # без платы и torch
+py -3 spatial/dense_fuse.py <IP> --frames 1            # synth на живом кадре
+py -3 spatial/dense_fuse.py <IP> --frames 6 --backend depthanything
+```
+Проверено на железе: sparse ≈40 → **dense ≈8000 точек/кадр (×200)**. Для НАСТОЯЩЕЙ
+геометрии комнаты — поставить `torch`+`transformers` и `--backend depthanything`.
+Самотест ядра: `py -3 spatial/depth_fusion.py`.
 
 ## Этап 3 — Wi-Fi-якорь позиции (`wifi_anchor.py`, `wifi_collect.py`)
 
