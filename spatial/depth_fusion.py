@@ -172,6 +172,83 @@ def densify_to_points(rel_depth, tof_grid, res, w, h, intr, cfg_flip_h=True, cfg
     return out
 
 
+# ───────────────────── склейка: кадр → плотные МИРОВЫЕ точки ─────────────────────
+
+def intrinsics_from_fov(w: int, h: int, hfov_deg: float, vfov_deg: float | None = None):
+    """Грубые интринсики камеры из FoV (нет калибровки): fx=(w/2)/tan(hfov/2).
+    Квадратный пиксель по умолчанию (fy=fx). OV2640 со штатной линзой ~65° HFoV."""
+    fx = (w / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
+    fy = fx if vfov_deg is None else (h / 2.0) / math.tan(math.radians(vfov_deg) / 2.0)
+    return (fx, fy, w / 2.0, h / 2.0)
+
+
+def frame_to_dense_world(jpeg_bytes, tof: dict, pose, backend, cam_hfov_deg: float = 65.0,
+                         flip_h: bool = True, flip_v: bool = True, max_points: int = 8000,
+                         weight: float = 0.5, ransac_iters: int = 100):
+    """RGB-кадр + ToF + поза → генератор плотных МИРОВЫХ точек (wx, wy, wz, (r,g,b), w).
+
+    Видео несёт ГЕОМЕТРИЮ: моно-сеть (backend) даёт относит. глубину на весь кадр,
+    64 ToF-зоны задают МЕТРИЧЕСКИЙ масштаб (fit_scale_shift), цвет берём из кадра,
+    поза переносит в мир. w<1 — плотные точки менее точны, чем ToF (мягче копятся).
+    Нужны numpy + PIL. Кадр координат: x-вправо, y-вверх, z-вперёд (как tof_cloud)."""
+    import io
+    import numpy as np
+    from PIL import Image
+    from tof_cloud import apply_pose
+
+    res = int(tof.get("res", 8))
+    grid = tof.get("grid")
+    if not grid or len(grid) < res * res:
+        return
+    img = Image.open(io.BytesIO(jpeg_bytes)).convert("RGB")
+    w, h = img.size
+    rel = backend.infer(w, h) if isinstance(backend, SynthBackend) else backend.infer(img)
+    rd = np.asarray(rel, dtype="float32")
+    if rd.shape != (h, w):  # сеть могла вернуть свой размер — растянем под кадр
+        pil = Image.fromarray(rd).resize((w, h))
+        rd = np.asarray(pil, dtype="float32")
+
+    fx, fy, cx, cy = intrinsics_from_fov(w, h, cam_hfov_deg)
+
+    # масштаб по ToF-зонам (rel в центре зоны ↔ мм)
+    rel_z, mm_z = [], []
+    for r in range(res):
+        for c in range(res):
+            mm = grid[r * res + c]
+            fc = (c + 0.5) / res
+            fr = (r + 0.5) / res
+            if flip_h:
+                fc = 1.0 - fc
+            if flip_v:
+                fr = 1.0 - fr
+            u = min(w - 1, int(fc * w))
+            v = min(h - 1, int(fr * h))
+            rel_z.append(float(rd[v, u]))
+            mm_z.append(mm)
+    fit = fit_scale_shift(rel_z, mm_z, ransac_iters=ransac_iters)
+    if not fit:
+        return
+    s, b, _ = fit
+
+    inv_z = s * rd + b
+    Z = np.where(inv_z > 1e-3, 1.0 / np.maximum(inv_z, 1e-6), np.nan)
+    Z = np.where((Z > 0.05) & (Z < 6.0), Z, np.nan)  # отсечь нефизичное
+    ys, xs = np.where(~np.isnan(Z))
+    n = len(xs)
+    if n == 0:
+        return
+    if n > max_points:                              # равномерно прорядить
+        idx = np.linspace(0, n - 1, max_points).astype(int)
+        ys, xs = ys[idx], xs[idx]
+    px = img.load()
+    for v, u in zip(ys.tolist(), xs.tolist()):
+        z = float(Z[v, u])
+        x = (u - cx) * z / fx
+        y = (cy - v) * z / fy                        # v вниз → y вверх
+        wx, wy, wz = apply_pose(x, y, z, pose)
+        yield (wx, wy, wz, px[u, v], weight)
+
+
 if __name__ == "__main__":
     # self-test ядра без зависимостей
     rel = [0.9, 0.8, 0.7, 0.6, None, 0.5]
