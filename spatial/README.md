@@ -115,8 +115,16 @@ py -3 spatial/dense_fuse.py --selftest                 # без платы и to
 py -3 spatial/dense_fuse.py <IP> --frames 1            # synth на живом кадре
 py -3 spatial/dense_fuse.py <IP> --frames 6 --backend depthanything
 ```
-Проверено на железе: sparse ≈40 → **dense ≈8000 точек/кадр (×200)**. Для НАСТОЯЩЕЙ
-геометрии комнаты — поставить `torch`+`transformers` и `--backend depthanything`.
+Проверено на железе с реальной Depth Anything V2: sparse ≈41 → **dense ≈8000
+точек/кадр (×190)**, форма глубины настоящая (передний план ближе, мебель дальше).
+
+Реальный бэкенд (transformers 5.x): загружается с `use_fast=False` (у модели нет
+fast image-processor) — это уже зашито в `DepthAnythingBackend`. При флапающей сети
+HF Hub: один раз прогреть кэш, дальше грузить из него —
+```bash
+set HF_HUB_OFFLINE=1   # (PowerShell: $env:HF_HUB_OFFLINE="1")
+py -3 spatial/dense_fuse.py <IP> --frames 6 --backend depthanything
+```
 Самотест ядра: `py -3 spatial/depth_fusion.py`.
 
 ## Этап 3 — Wi-Fi-якорь позиции (`wifi_anchor.py`, `wifi_collect.py`)
