@@ -20,11 +20,20 @@ class SafetyGovernor:
         stop_cm: int = 20,
         perception_timeout_s: float = 1.0,
         watchdog_ms: int = 450,
+        tof_stop_mm: int = 150,
+        tof_slow_mm: int = 600,
+        tof_gov: bool = True,
     ) -> None:
         self.max_speed = max(1, min(255, int(max_speed)))
         self.stop_cm = int(stop_cm)
         self.perception_timeout_s = float(perception_timeout_s)
         self.watchdog_ms = int(watchdog_ms)
+        # Регулятор скорости по фронтальному ToF — зеркало прошивки (safeSpeed, B10):
+        # defense-in-depth, плюс полностью тестируется без железа. Пороги совпадают
+        # с drive_config.h (XIAO_DRIVE_GOV_STOP_MM / SLOW_MM).
+        self.tof_stop_mm = int(tof_stop_mm)
+        self.tof_slow_mm = int(tof_slow_mm)
+        self.tof_gov = bool(tof_gov)
         self.last_reason = "init"
 
     @property
@@ -41,6 +50,18 @@ class SafetyGovernor:
         right = (f - t) * self.max_speed
         clamp = lambda v: int(max(-self.max_speed, min(self.max_speed, round(v))))
         return clamp(left), clamp(right)
+
+    def gov_scale(self, tof_mm) -> float:
+        """Масштаб скорости 0..1 по фронтальной дистанции (мм). Зеркало
+        driveGovScale в прошивке: нет цели/выкл → 1.0; ближе stop → 0; дальше
+        slow → 1.0; между — линейно."""
+        if not self.tof_gov or not isinstance(tof_mm, (int, float)) or tof_mm <= 0:
+            return 1.0  # цели нет / регулятор выкл — не режем
+        if tof_mm <= self.tof_stop_mm:
+            return 0.0
+        if tof_mm >= self.tof_slow_mm:
+            return 1.0
+        return (tof_mm - self.tof_stop_mm) / float(self.tof_slow_mm - self.tof_stop_mm)
 
     def decide(
         self,
@@ -66,6 +87,14 @@ class SafetyGovernor:
         if not intent.confident:
             self.last_reason = "неуверенно"
             return 0, 0
-        # 5. Норма.
+        # 5. Норма + регулятор по фронтальному ToF (только движение вперёд).
         self.last_reason = "ok"
-        return self._mix(intent)
+        left, right = self._mix(intent)
+        if left >= 0 and right >= 0 and (left > 0 or right > 0):
+            scale = self.gov_scale(telemetry.get("tof_mm"))
+            if scale < 1.0:
+                left = int(round(left * scale))
+                right = int(round(right * scale))
+                self.last_reason = "ToF %s мм → %d%%" % (
+                    telemetry.get("tof_mm"), int(round(scale * 100)))
+        return left, right

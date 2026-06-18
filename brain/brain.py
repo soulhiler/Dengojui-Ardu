@@ -19,8 +19,10 @@ import sys
 import time
 
 from perception import BrightnessRecognizer, DummyRecognizer
+from planner import NamedSkillPlanner, reactive_policy, sequence_policy
 from robot import RobotClient, RobotError
 from safety import SafetyGovernor
+from skills import SkillContext, build_default_registry
 
 
 def build_recognizer(name: str):
@@ -38,6 +40,9 @@ def main() -> int:
     ap.add_argument("host", help="IP платы, напр. 192.168.1.50 (или host:port)")
     ap.add_argument("--token", default="", help="токен платы (если включён XIAO_API_TOKEN)")
     ap.add_argument("--recognizer", choices=["dummy", "brightness"], default="dummy")
+    ap.add_argument("--planner", choices=["off", "patrol", "reactive"], default="off",
+                    help="секвенсор навыков (Фаза 2): off=распознаватель напрямую; "
+                         "patrol=скриптовый круг; reactive=explore + отворот по ToF")
     ap.add_argument("--max-speed", type=int, default=180)
     ap.add_argument("--stop-cm", type=int, default=20, help="0 = без УЗ-стопа в мозге")
     ap.add_argument("--interval", type=float, default=0.0, help="0 = безопасный по watchdog")
@@ -50,6 +55,17 @@ def main() -> int:
     rec = build_recognizer(args.recognizer)
     gov = SafetyGovernor(max_speed=args.max_speed, stop_cm=args.stop_cm)
     interval = args.interval if args.interval > 0 else gov.command_interval_s
+
+    # Источник Intent: либо распознаватель напрямую (off), либо планировщик навыков.
+    planner = None
+    if args.planner != "off":
+        reg = build_default_registry(recognizer=rec)
+        if args.planner == "patrol":
+            policy = sequence_policy([("forward", 3.0), ("turn_right", 1.0)],
+                                     clock=time.monotonic)
+        else:  # reactive: исследуем (explore), близко по ToF → отворот (avoid)
+            policy = reactive_policy("explore", near_mm=350)
+        planner = NamedSkillPlanner(reg, policy)
 
     print(
         "мозг: host=%s rec=%s max=%d stop_cm=%d interval=%.3fs%s"
@@ -82,7 +98,10 @@ def main() -> int:
                 except RobotError:
                     frame = None  # кадр не критичен — перцепция устареет → governor стопнет
 
-            intent = rec.infer(frame, tele)
+            if planner is not None:
+                intent = planner.tick(SkillContext(telemetry=tele, frame=frame))
+            else:
+                intent = rec.infer(frame, tele)
             now = time.monotonic()
             if intent.confident:
                 last_perception = now
@@ -90,8 +109,9 @@ def main() -> int:
             left, right = gov.decide(intent, tele, now, last_perception)
 
             if args.dry_run:
-                print("L=%4d R=%4d  [%s]  tele.safety=%s us=%s"
-                      % (left, right, gov.last_reason,
+                src = ("навык:%s" % planner.active) if planner is not None else rec.name
+                print("L=%4d R=%4d  [%s]  %s  tele.safety=%s us=%s"
+                      % (left, right, gov.last_reason, src,
                          tele.get("drive_safety"), tele.get("us_cm")))
             else:
                 try:

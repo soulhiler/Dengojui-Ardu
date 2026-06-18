@@ -28,6 +28,16 @@
 #ifndef DRIVE_US_STOP_CM
 #define DRIVE_US_STOP_CM 0
 #endif
+/* Регулятор скорости по фронтальному ToF (см. drive_config.h). */
+#ifndef XIAO_DRIVE_TOF_GOV
+#define XIAO_DRIVE_TOF_GOV 0
+#endif
+#ifndef XIAO_DRIVE_GOV_STOP_MM
+#define XIAO_DRIVE_GOV_STOP_MM 150
+#endif
+#ifndef XIAO_DRIVE_GOV_SLOW_MM
+#define XIAO_DRIVE_GOV_SLOW_MM 600
+#endif
 
 struct XiaoDriveState {
   bool hw_ok = false;
@@ -46,6 +56,8 @@ struct XiaoDriveState {
 };
 
 static XiaoDriveState gDrive;
+static uint16_t gDriveFrontMm = 0;   // фронтальная дистанция (tof_mm), 0 = нет цели
+static uint8_t gDriveGovScale = 100; // последний масштаб регулятора, % (100 = не режет)
 static volatile int32_t gEncL = 0;
 static volatile int32_t gEncR = 0;
 static volatile uint32_t gEncTsL = 0;
@@ -87,6 +99,30 @@ static inline int16_t driveClamp16(int v, int lo, int hi) {
   return static_cast<int16_t>(v);
 }
 
+/* Регулятор по фронтальной дистанции (B10, ступень 1 «лестницы предикторов»):
+   масштаб скорости 0..100 % линейно по дистанции. d=0 (нет цели) → 100 (не
+   ограничиваем, как us_cm==0). Ближе STOP → 0; дальше SLOW → 100. */
+static inline uint8_t driveGovScale(uint16_t frontMm) {
+#if XIAO_DRIVE_TOF_GOV
+  if (frontMm == 0) {
+    return 100;  // цели нет — не режем (иначе ложный стоп на открытом)
+  }
+  if (frontMm <= XIAO_DRIVE_GOV_STOP_MM) {
+    return 0;
+  }
+  if (frontMm >= XIAO_DRIVE_GOV_SLOW_MM) {
+    return 100;
+  }
+  const uint32_t span = XIAO_DRIVE_GOV_SLOW_MM - XIAO_DRIVE_GOV_STOP_MM;
+  return static_cast<uint8_t>((static_cast<uint32_t>(frontMm - XIAO_DRIVE_GOV_STOP_MM) * 100u) / span);
+#else
+  (void)frontMm;
+  return 100;
+#endif
+}
+
+static inline void xiaoDriveSetFrontMm(uint16_t mm) { gDriveFrontMm = mm; }
+
 #if XIAO_DRIVE_DRIVER_TB6612
 static void driveMotorTb6612(uint8_t pwmPin, uint8_t in1, uint8_t in2, int16_t cmd) {
   cmd = driveClamp16(cmd, -255, 255);
@@ -121,6 +157,7 @@ static void driveApplyMotors() {
 #endif
   // safety != 0 перекрывает любые команды (рефлекс важнее клиента).
   if (!gDrive.enabled || gDrive.watchdog_stop || gDrive.safety != 0) {
+    gDriveGovScale = 100;  // регулятор не действует — стоп по другой причине
 #if XIAO_DRIVE_DRIVER_TB6612
     driveMotorTb6612(DRIVE_L_PWM, DRIVE_L_IN1, DRIVE_L_IN2, 0);
     driveMotorTb6612(DRIVE_R_PWM, DRIVE_R_IN1, DRIVE_R_IN2, 0);
@@ -130,12 +167,27 @@ static void driveApplyMotors() {
 #endif
     return;
   }
+
+  int16_t l = gDrive.cmd_l;
+  int16_t r = gDrive.cmd_r;
+  // Регулятор по фронтальному ToF — только при движении ВПЕРЁД (оба колеса не
+  // назад, есть тяга вперёд). Реверс/поворот на месте не ограничиваем.
+  uint8_t scale = 100;
+  if (l >= 0 && r >= 0 && (l > 0 || r > 0)) {
+    scale = driveGovScale(gDriveFrontMm);
+    if (scale != 100) {
+      l = static_cast<int16_t>(static_cast<int32_t>(l) * scale / 100);
+      r = static_cast<int16_t>(static_cast<int32_t>(r) * scale / 100);
+    }
+  }
+  gDriveGovScale = scale;
+
 #if XIAO_DRIVE_DRIVER_TB6612
-  driveMotorTb6612(DRIVE_L_PWM, DRIVE_L_IN1, DRIVE_L_IN2, gDrive.cmd_l);
-  driveMotorTb6612(DRIVE_R_PWM, DRIVE_R_IN1, DRIVE_R_IN2, gDrive.cmd_r);
+  driveMotorTb6612(DRIVE_L_PWM, DRIVE_L_IN1, DRIVE_L_IN2, l);
+  driveMotorTb6612(DRIVE_R_PWM, DRIVE_R_IN1, DRIVE_R_IN2, r);
 #else
-  driveMotorSignMag(DRIVE_L_PWM, DRIVE_L_DIR, gDrive.cmd_l);
-  driveMotorSignMag(DRIVE_R_PWM, DRIVE_R_DIR, gDrive.cmd_r);
+  driveMotorSignMag(DRIVE_L_PWM, DRIVE_L_DIR, l);
+  driveMotorSignMag(DRIVE_R_PWM, DRIVE_R_DIR, r);
 #endif
 }
 
@@ -326,6 +378,12 @@ static inline void xiaoDriveTick() {
       driveApplyMotors();
     }
   }
+
+#if XIAO_DRIVE_TOF_GOV
+  // Регулятор пересчитывается по СВЕЖЕЙ дистанции каждый тик — иначе при
+  // приближении к стене между командами /drive ход не сбавится до следующей.
+  driveApplyMotors();
+#endif
 }
 
 static inline void xiaoDriveGetState(XiaoDriveState *out) {
@@ -370,6 +428,9 @@ static inline void xiaoDriveAppendTelemetry(String &j, bool &comma) {
   appendU("us_cm", gDrive.us_cm);
   appendU("bumper", gDrive.bumper);
   appendU("drive_safety", gDrive.safety);
+  // Регулятор по ToF: дистанция и масштаб (C15 — «команду подрезали до X»).
+  appendU("drive_front_mm", gDriveFrontMm);
+  appendU("drive_gov", gDriveGovScale);
 }
 
 #else /* !XIAO_DRIVE_ENABLE */
@@ -381,6 +442,7 @@ static inline void xiaoDriveTick() {}
 static inline void xiaoDriveSetEnabled(bool) {}
 static inline void xiaoDriveSetLr(int16_t, int16_t) {}
 static inline void xiaoDriveStop() {}
+static inline void xiaoDriveSetFrontMm(uint16_t) {}
 static inline void xiaoDriveGetState(XiaoDriveState *) {}
 static inline void xiaoDriveAppendTelemetry(String &, bool &) {}
 

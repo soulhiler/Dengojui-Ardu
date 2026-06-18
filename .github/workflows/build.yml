@@ -61,6 +61,11 @@ jobs:
       - name: Publish APK to rolling release apk-latest
         # Releases не тратят квоту хранилища артефактов Actions —
         # upload-artifact падал с "Artifact storage quota has been hit".
+        # continue-on-error: публикация APK — запасной канал доставки и не должна
+        # ронять сборку (как и upload-artifact ниже). Нужно, когда окружение
+        # блокирует создание тегов/релизов (gh release create → HTTP 422
+        # "Published releases must have a valid tag") — сам APK при этом собран.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
