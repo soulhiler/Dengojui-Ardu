@@ -46,6 +46,9 @@ PWM = int(_opt("--pwm", "160"))
 STOP_MM = 400          # стоп, если впереди ближе (мм)
 BURST_S = 0.4          # длительность импульса проезда (шаг ~7-15 см)
 MIN_INLIERS = 30       # минимум инлайеров VO, чтобы доверять сдвигу
+# Сенсоры (камера+ToF) смотрят ПРОТИВ моторного «+»: drive(+,+) едет НАЗАД относительно
+# камеры. Чтобы ехать ТУДА, КУДА СМОТРИМ (ToF защищает путь, картируем впереди) — реверс.
+DRIVE_FWD_SIGN = -1
 
 
 def _g(p, t=8.0, tries=4):
@@ -76,11 +79,36 @@ def stop():
 
 
 def forward_burst():
+    """Едем В СТОРОНУ СЕНСОРОВ (камера/ToF смотрят туда) — drive с DRIVE_FWD_SIGN."""
+    p = DRIVE_FWD_SIGN * PWM
     t = time.time()
     while time.time() - t < BURST_S:
-        drive(PWM, PWM)
+        drive(p, p)
         time.sleep(0.1)
     stop()
+
+
+def check_direction():
+    """Подтвердить, что едем В СТОРОНУ сенсоров: при коротком проезде ToF спереди
+    должен УМЕНЬШИТЬСЯ (приближаемся к тому, что видим). True=ок/неизвестно,
+    False=едем ОТ сенсоров (реверс неверен)."""
+    d0 = telem().get("tof_mm")
+    if not d0 or d0 <= 0:
+        print("проверка направления: ToF без цели впереди — пропускаю (доверяю реверсу).")
+        return True
+    p = DRIVE_FWD_SIGN * PWM
+    t = time.time()
+    while time.time() - t < 0.25:
+        drive(p, p)
+        time.sleep(0.1)
+    stop()
+    time.sleep(0.8)
+    d1 = telem().get("tof_mm") or 0
+    print("проверка направления: ToF %d → %d мм" % (d0, d1))
+    if d1 and d1 > d0 + 40:
+        print("!! Едем ОТ сенсоров (ToF растёт) — реверс неверен. СТОП.")
+        return False
+    return True
 
 
 def grab(backend):
@@ -99,7 +127,11 @@ def main():
     model = WorldModel(voxel_m=0.05)
     _g("/control?tofprofile=accurate", 4.0, 2)   # 8×8 — плотнее глубина и точнее масштаб
     time.sleep(1.2)
-    print("VO-DRIVE: ip=%s, шагов≤%d, стоп<%dмм. Едет вперёд по свободному ToF.\n" % (IP, STEPS, STOP_MM))
+    print("VO-DRIVE: ip=%s, шагов≤%d, стоп<%dмм. Едем В СТОРОНУ сенсоров (камера/ToF).\n" % (IP, STEPS, STOP_MM))
+    if not check_direction():
+        stop()
+        _g("/control?tofprofile=auto", 4.0, 2)
+        return
 
     pose = np.eye(4)
     prev = None          # (gray, Z, intr, imu_yaw)
