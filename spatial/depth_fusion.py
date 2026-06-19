@@ -253,6 +253,29 @@ def frame_to_dense_world(jpeg_bytes, tof: dict, pose, backend, cam_hfov_deg: flo
         yield (wx, wy, wz, px[u, v], weight)
 
 
+def dense_points_from_depth(Z, rgb_pil, intr, pose, max_points: int = 8000, weight: float = 0.5):
+    """Готовая метрическая карта глубины Z[H,W] (метры, NaN=нет) + RGB-кадр + поза →
+    генератор плотных МИРОВЫХ точек (wx, wy, wz, (r,g,b), w). Без повторного инференса
+    (для VO-drive: Z уже посчитана в metric_depth_map). intr=(fx,fy,cx,cy)."""
+    import numpy as np
+    from tof_cloud import apply_pose
+    fx, fy, cx, cy = intr
+    ys, xs = np.where(~np.isnan(Z))
+    n = len(xs)
+    if n == 0:
+        return
+    if n > max_points:
+        idx = np.linspace(0, n - 1, max_points).astype(int)
+        ys, xs = ys[idx], xs[idx]
+    px = rgb_pil.load()
+    for v, u in zip(ys.tolist(), xs.tolist()):
+        z = float(Z[v, u])
+        x = (u - cx) * z / fx
+        y = (cy - v) * z / fy
+        wx, wy, wz = apply_pose(x, y, z, pose)
+        yield (wx, wy, wz, px[u, v], weight)
+
+
 def metric_depth_map(jpeg_bytes, tof: dict, backend, cam_hfov_deg: float = 65.0,
                      flip_h: bool = True, flip_v: bool = True, ransac_iters: int = 100):
     """RGB-кадр + ToF → (depth_m [H,W] метры, gray [H,W] uint8, intr) — для VO (vo.py).
