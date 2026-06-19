@@ -253,6 +253,50 @@ def frame_to_dense_world(jpeg_bytes, tof: dict, pose, backend, cam_hfov_deg: flo
         yield (wx, wy, wz, px[u, v], weight)
 
 
+def metric_depth_map(jpeg_bytes, tof: dict, backend, cam_hfov_deg: float = 65.0,
+                     flip_h: bool = True, flip_v: bool = True, ransac_iters: int = 100):
+    """RGB-кадр + ToF → (depth_m [H,W] метры, gray [H,W] uint8, intr) — для VO (vo.py).
+    Та же метрика по ToF-зонам, что frame_to_dense_world, но возвращаем КАРТУ глубины
+    (а не облако): VO поднимает ORB-фичи в 3D по этой карте. Нужны numpy + PIL."""
+    import io
+    import numpy as np
+    from PIL import Image
+
+    res = int(tof.get("res", 8))
+    grid = tof.get("grid")
+    if not grid or len(grid) < res * res:
+        return None
+    img = Image.open(io.BytesIO(jpeg_bytes)).convert("RGB")
+    w, h = img.size
+    rel = backend.infer(w, h) if isinstance(backend, SynthBackend) else backend.infer(img)
+    rd = np.asarray(rel, dtype="float32")
+    if rd.shape != (h, w):
+        rd = np.asarray(Image.fromarray(rd).resize((w, h)), dtype="float32")
+    intr = intrinsics_from_fov(w, h, cam_hfov_deg)
+    rel_z, mm_z = [], []
+    for r in range(res):
+        for c in range(res):
+            mm = grid[r * res + c]
+            fc = (c + 0.5) / res
+            fr = (r + 0.5) / res
+            if flip_h:
+                fc = 1.0 - fc
+            if flip_v:
+                fr = 1.0 - fr
+            u = min(w - 1, int(fc * w))
+            v = min(h - 1, int(fr * h))
+            rel_z.append(float(rd[v, u]))
+            mm_z.append(mm)
+    fit = fit_scale_shift(rel_z, mm_z, ransac_iters=ransac_iters)
+    if not fit:
+        return None
+    s, b, _ = fit
+    inv_z = s * rd + b
+    Z = np.where(inv_z > 1e-3, 1.0 / np.maximum(inv_z, 1e-6), np.nan).astype("float32")
+    gray = np.asarray(img.convert("L"), dtype="uint8")
+    return Z, gray, intr
+
+
 if __name__ == "__main__":
     # self-test ядра без зависимостей
     rel = [0.9, 0.8, 0.7, 0.6, None, 0.5]
