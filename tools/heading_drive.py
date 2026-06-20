@@ -5,13 +5,15 @@
 ошибка курса (IMU) → дифференциал моторов. Знак руления авто-калибруется. Едем
 вперёд = В СТОРОНУ сенсоров (DRIVE_FWD_SIGN), с ToF-стопом перед препятствием.
 
-Статус (2026-06-19): работает в принципе — поворот на месте сводит ошибку курса
-(45°→~9°), калибровка знака надёжна. ОГРАНИЧЕНИЕ: IMU (MPU6050) дёргается при
-бросках тока моторов (общее питание с моторами) — у закрытого контура дропауты
-курса. Полная стабильность требует РАЗВЯЗКИ ПИТАНИЯ (декаплинг-конденсатор на
-MPU6050 / отдельное питание моторов) или более ёмкой/заряженной батареи. Калибровку
-руления делаем мягко на месте (fwd=0), не на форварде (там диф давал ~240 PWM =
-бросок тока). Строительный блок для B.2 (картирование в управляемом проезде).
+Статус (2026-06-20): алгоритм работает — ИМПУЛЬСНЫЙ контур (курс читаем на стоянке
+между импульсами, т.к. под мотором плата не отвечает) держит курс точно (на шаге
+ошибка 0°, цель=факт). Знак руления cal=+1 известен (спин-калибровку пропускаем —
+она садила плату). ОГРАНИЧЕНИЕ — ЖЕЛЕЗО: при rssi≈−59 (робот далеко от точки
+доступа) бросок тока мотора роняет WiFi платы на ~секунды → между импульсами не
+успевает восстановиться, многошаговая езда рвётся. При rssi≈−49 (близко) vo_drive
+ехал нормально. Нужно: ближе к AP / лучше антенна + РАЗВЯЗКА ПИТАНИЯ (bulk-конд. на
+VM драйвера и рейле платы, декаплинг на MPU6050) + заряженная батарея. Строительный
+блок для B.2 (картирование в управляемом проезде).
 
 Запуск:
   python tools/heading_drive.py [IP] [--sec 6] [--base 140] [--turn ГРАД]
@@ -33,6 +35,7 @@ def _opt(k, d):
 SEC = float(_opt("--sec", "6"))
 BASE = int(_opt("--base", "140"))
 TURN = _opt("--turn", None)          # если задан — поворот на месте на N° и удержание
+CAL = _opt("--cal", None)            # знак руления (по умолч. +1 из прошлых калибровок)
 DRIVE_FWD_SIGN = -1                  # сенсоры смотрят против моторного «+» (см. vo_drive.py)
 KP = 4.0                             # PWM на градус ошибки курса
 STEER_MAX = 130                      # ограничение дифференциала
@@ -96,7 +99,7 @@ def calibrate_steer_sign(fwd):
     y0 = imu_yaw_wait()
     if y0 is None:
         return None
-    D = 90
+    D = 130          # уверенно преодолеть стикшн при старте спина
     t = time.time()
     while time.time() - t < 0.5:
         drive(fwd + D, fwd - D)
@@ -117,40 +120,48 @@ def control(target, seconds, fwd, cal, log_label="едем"):
     """P-удержание курса target в течение seconds. fwd=0 → поворот на месте.
     Возвращает (max|ошибка|, реально). ToF-стоп при езде."""
     t0 = time.time()
-    last_report = t0
     errs = []
-    last_l = last_r = 0
     reached = 0
+    step = 0
+    # ИМПУЛЬСНЫЙ цикл: курс читаем НА СТОЯНКЕ (плата отвечает только без нагрузки —
+    # просадка питания при моторе), затем короткий импульс привода и снова стоп.
     while time.time() - t0 < seconds:
-        y = imu_yaw()
-        if y is not None:
-            e = wrap180(target - y)
-            errs.append(abs(e))
-            if abs(e) <= TOL_DEG:
-                s = 0.0
-                reached += 1
-            else:
-                reached = 0
-                s = max(-STEER_MAX, min(STEER_MAX, cal * KP * e))
-                if fwd == 0 and abs(s) < MIN_MOVE:     # стикшн: поворот на месте требует мин. PWM
-                    s = MIN_MOVE if s > 0 else -MIN_MOVE
-            last_l, last_r = fwd + s, fwd - s
-            if fwd == 0 and reached >= 4:               # поворот: цель удержана — готово
+        y = imu_yaw_wait(8)
+        if y is None:
+            time.sleep(0.3)
+            continue
+        e = wrap180(target - y)
+        errs.append(abs(e))
+        if abs(e) <= TOL_DEG:
+            reached += 1
+            s = 0.0
+            if fwd == 0 and reached >= 2:           # поворот достигнут и удержан
                 break
-        drive(last_l, last_r)          # на дропауте IMU держим прошлую команду
-        if fwd != 0:
+        else:
+            reached = 0
+            s = max(-STEER_MAX, min(STEER_MAX, cal * KP * e))
+            if fwd == 0 and abs(s) < MIN_MOVE:        # стикшн ТОЛЬКО для поворота на месте
+                s = MIN_MOVE if s >= 0 else -MIN_MOVE
+        step += 1
+        print("  шаг %d: курс=%.0f цель=%.0f ошибка=%+.0f° s=%+.0f" % (step, y, target, e, s))
+        # короткий импульс + стоп. Для поворота длительность ∝ ошибке (не перелетать);
+        # для езды — фикс короткий (руление мягкое на фоне форварда).
+        if fwd == 0:
+            dur = max(0.06, min(0.22, 0.004 * abs(e)))
+        else:
+            dur = 0.22
+        l, r = fwd + s, fwd - s
+        tb = time.time()
+        while time.time() - tb < dur:
+            drive(l, r)
+            time.sleep(0.08)
+        stop()
+        if fwd != 0:                                  # препятствие?
             fm = telem().get("tof_mm")
             if fm and 0 < fm < STOP_MM:
-                stop()
                 print("  препятствие %dмм — стоп" % fm)
                 break
-        now = time.time()
-        if now - last_report > 1.5:
-            last_report = now
-            print("  t=%.1f курс=%s цель=%.0f ошибка=%s°" % (
-                now - t0, ("%.0f" % y) if y is not None else "—", target,
-                ("%.0f" % wrap180(target - y)) if y is not None else "—"))
-        time.sleep(0.12)
+        time.sleep(0.45)                              # пауза: плата отвечает, вибрация гаснет
     stop()
     return max(errs) if errs else None
 
@@ -162,11 +173,17 @@ def main():
         print("IMU молчит — не могу держать курс."); return
     print("текущий курс=%.0f°" % y0)
 
-    cal = calibrate_steer_sign(0)        # ВСЕГДА на месте (мягкий ток); знак тот же для езды
-    if cal is None:
-        print("калибровка руления не удалась (IMU дёрнулся / не повернулось). Стоп.")
-        stop(); return
-    print("знак руления cal=%+d" % cal)
+    if CAL is not None:
+        cal = float(CAL)
+        print("знак руления cal=%+g (задан)" % cal)
+    elif "--autocal" in sys.argv:
+        cal = calibrate_steer_sign(0)
+        if cal is None:
+            print("автокалибровка не удалась (просадка/IMU). Стоп."); stop(); return
+        print("знак руления cal=%+d" % cal)
+    else:
+        cal = 1.0                        # из прошлых калибровок (s>0 -> курс растёт); --autocal перемерить
+        print("знак руления cal=+1 (известен; --autocal чтобы перемерить)")
 
     if TURN is not None:
         target = wrap180(y0 + float(TURN))
