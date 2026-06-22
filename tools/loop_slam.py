@@ -203,6 +203,13 @@ def vo_step(prev, cur):
                                  prev["intr"], MATCHER, R_prior=R)
 
 
+def _imu_delta(prev, cur):
+    """Δкурс (°) между кадрами по IMU, или 0 если IMU молчал."""
+    if isinstance(cur["imu"], (int, float)) and isinstance(prev["imu"], (int, float)):
+        return wrap180(cur["imu"] - prev["imu"])
+    return 0.0
+
+
 def se2(T):
     return [float(T[0, 3]), float(T[2, 3]), vo.yaw_of(T[:3, :3])]
 
@@ -223,29 +230,44 @@ def main():
 
     kfs = []
     pose = np.eye(4)
+    est_step = [0.10]        # бегущая оценка шага (м) — для счисления при потере VO
+    dr_count = [0]
 
-    def add_kf(c, pure_rot=False):
+    def add_kf(c, pure_rot=False, dr_sign=0):
+        """dr_sign != 0: при потере VO НЕ прерываем обход, а счисляем шаг по IMU
+        (поворот из IMU + средний шаг dr_sign·est_step) — большой обход не рвётся,
+        замыкание петли выправит. dr_sign=0 — старое строгое поведение."""
         nonlocal pose
+        dr = False
         if kfs:
             if pure_rot:
-                # поворот на месте: относительная поза = чистый поворот из IMU, сдвиг 0
-                # (VO на 90°-скачке не сматчит — а тут трансляции и нет).
-                imu_d = 0.0
-                if isinstance(c["imu"], (int, float)) and isinstance(kfs[-1]["imu"], (int, float)):
-                    imu_d = wrap180(c["imu"] - kfs[-1]["imu"])
-                pose = pose @ vo.make_T(vo.R_yaw(math.radians(imu_d)), np.zeros(3))
+                # поворот на месте: относительная поза = чистый поворот из IMU, сдвиг 0.
+                pose = pose @ vo.make_T(vo.R_yaw(math.radians(_imu_delta(kfs[-1], c))), np.zeros(3))
             else:
                 rel = vo_step(kfs[-1], c)
-                if not rel or rel[1] < MIN_INLIERS:
+                if rel and rel[1] >= MIN_INLIERS:
+                    pose = pose @ rel[0]
+                    t = math.hypot(rel[0][0, 3], rel[0][2, 3])
+                    if t > 0.005:
+                        est_step[0] = 0.7 * est_step[0] + 0.3 * t   # уточняем оценку шага
+                elif dr_sign != 0:
+                    pose = pose @ vo.make_T(vo.R_yaw(math.radians(_imu_delta(kfs[-1], c))),
+                                            np.array([0.0, 0.0, dr_sign * est_step[0]]))
+                    dr = True
+                    dr_count[0] += 1
+                    print("  VO потерян (инлайеров %d) — счисление IMU+шаг %.2fм"
+                          % (rel[1] if rel else 0, est_step[0]))
+                else:
                     print("  VO потерян (инлайеров %d) — прерываю проезд" % (rel[1] if rel else 0))
                     return False
-                pose = pose @ rel[0]
+        c["dr"] = dr
         c["pose"] = pose.copy()
         kfs.append(c)
         d = math.hypot(pose[0, 3], pose[2, 3])
+        tag = " (поворот)" if pure_rot else (" (счисл.)" if dr else "")
         print("  кадр %d%s: x=%.2f z=%.2f курс=%.0f° (от старта %.2f м) впереди=%sмм"
-              % (len(kfs) - 1, " (поворот)" if pure_rot else "",
-                 pose[0, 3], pose[2, 3], math.degrees(vo.yaw_of(pose[:3, :3])), d, c["fwd"]))
+              % (len(kfs) - 1, tag, pose[0, 3], pose[2, 3],
+                 math.degrees(vo.yaw_of(pose[:3, :3])), d, c["fwd"]))
         return True
 
     try:
@@ -272,7 +294,7 @@ def main():
                         break
                     burst(DRIVE_FWD_SIGN, target)
                     c = capture(backend)
-                    if c is None or not add_kf(c):
+                    if c is None or not add_kf(c, dr_sign=1):     # счисление при потере VO
                         done = True
                         break
                 if done:
@@ -295,14 +317,14 @@ def main():
                     break
                 burst(DRIVE_FWD_SIGN, target)
                 c = capture(backend)
-                if c is None or not add_kf(c):
+                if c is None or not add_kf(c, dr_sign=1):
                     break
                 fwd_done += 1
             print("  --- разворот: %d шагов назад ---" % fwd_done)
             for s in range(fwd_done):
                 burst(-DRIVE_FWD_SIGN, target)
                 c = capture(backend)
-                if c is None or not add_kf(c):
+                if c is None or not add_kf(c, dr_sign=-1):
                     break
     finally:
         stop()
@@ -318,7 +340,10 @@ def main():
     for nd in nodes:
         pg.add_node(nd)
     for k in range(len(nodes) - 1):
-        pg.add_edge(k, k + 1, PG.between(nodes[k], nodes[k + 1]))
+        # ребро-счисление (любой конец dr) — слабее: пусть его выправит замыкание петли
+        soft = kfs[k].get("dr") or kfs[k + 1].get("dr")
+        pg.add_edge(k, k + 1, PG.between(nodes[k], nodes[k + 1]),
+                    info=np.eye(3) * (0.3 if soft else 1.0))
 
     # --- детект петли: последние кадры vs первые ---
     n = len(kfs)
@@ -366,7 +391,8 @@ def main():
         else:
             model.integrate_frame(pts)
     st = model.stats()
-    print("ИТОГ: кадров=%d петель=%d вокселей=%d уверенных=%d" % (n, loops, st["voxels"], st["confident"]))
+    print("ИТОГ: кадров=%d (счислений=%d) петель=%d вокселей=%d уверенных=%d"
+          % (n, dr_count[0], loops, st["voxels"], st["confident"]))
     here = os.path.dirname(os.path.abspath(__file__))
     model.save(os.path.join(here, "..", "spatial", "loop_slam_world.json.gz"))
     print("Карта сохранена: spatial/loop_slam_world.json.gz")
