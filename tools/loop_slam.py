@@ -22,6 +22,13 @@ import sys
 import time
 import urllib.request
 
+# Windows-консоль (cp1251) не кодирует '→'/'←' и т. п. — принудительно utf-8,
+# иначе print финального отчёта падает уже ПОСЛЕ оптимизации (карта не сохранится).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "spatial"))
