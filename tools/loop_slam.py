@@ -45,10 +45,10 @@ def _opt(k, d):
 FWD_STEPS = int(_opt("--fwd", "4"))
 PWM = int(_opt("--pwm", "150"))
 DRIVE_FWD_SIGN = -1            # вперёд (в сторону сенсоров) = моторный «-»
-BURST_S = 0.32
+BURST_S = 0.16          # мельче шаг -> больше перекрытие кадров -> надёжнее VO
 STOP_MM = 380
-MIN_INLIERS = 25              # одометрия VO
-LOOP_MIN_INLIERS = 40        # замыкание петли (строже)
+MIN_INLIERS = 16              # одометрия VO
+LOOP_MIN_INLIERS = 30        # замыкание петли (строже)
 MIN_GAP = 3                  # минимум кадров между i,j для петли
 
 
