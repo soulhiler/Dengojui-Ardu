@@ -122,11 +122,16 @@ def _angle_bin(x, z, cx, cz, nbins):
     return int((a + math.pi) / (2 * math.pi) * nbins) % nbins
 
 
-def contour_radii(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=None, smooth=2):
-    """Радиальный профиль контура: на каждый угловой сектор — самая дальняя занятая
-    ячейка (стена). Пропуски интерполируются, профиль сглаживается медианой.
-    Возвращает (radii[nbins], center(cx,cz), coverage). Переиспользуется и контуром,
-    и классификацией «стена vs нутро» (Этап 2)."""
+WALL_PCT = 0.88         # перцентиль радиусов в секторе как «дальняя стена» (робастно к выбросам)
+
+
+def contour_radii(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=None, smooth=3,
+                  pct: float = WALL_PCT):
+    """Радиальный профиль СТЕН: в каждом секторе радиус стены = `pct`-перцентиль радиусов
+    занятых ячеек (не абсолютный максимум). Это отбрасывает 1–2 самых дальних выброса
+    глубины, но СОХРАНЯЕТ разреженные дальние стены (важно: робот к ним не подъезжал, там
+    мало вокселей). Затем межсекторное медианное сглаживание гасит одиночные сектора.
+    Возвращает (radii, center, coverage). Переиспользуется контуром и классификацией стена/нутро."""
     if not cells:
         return [0.0] * nbins, (0.0, 0.0), 0.0
     if center is None:
@@ -134,13 +139,15 @@ def contour_radii(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=No
         cz = sum(gz for _, gz in cells) / len(cells) * cell_m
     else:
         cx, cz = center
-    radii = [None] * nbins
+    sect = [[] for _ in range(nbins)]                       # радиусы занятых ячеек по секторам
     for (gx, gz) in cells:
         x, z = gx * cell_m, gz * cell_m
-        r = math.hypot(x - cx, z - cz)
-        b = _angle_bin(x, z, cx, cz, nbins)
-        if radii[b] is None or r > radii[b]:
-            radii[b] = r
+        sect[_angle_bin(x, z, cx, cz, nbins)].append(math.hypot(x - cx, z - cz))
+    radii = [None] * nbins
+    for b in range(nbins):
+        rs = sorted(sect[b])
+        if rs:
+            radii[b] = rs[min(len(rs) - 1, int(pct * len(rs)))]   # робастный «дальний»
     coverage = sum(1 for r in radii if r is not None) / nbins
     radii = _median_smooth(_fill_gaps(radii, nbins), nbins, smooth)
     return radii, (cx, cz), coverage
@@ -156,6 +163,46 @@ def room_contour(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=Non
         a = -math.pi + 2 * math.pi * (b + 0.5) / nbins
         polygon.append((cx + radii[b] * math.cos(a), cz + radii[b] * math.sin(a)))
     return polygon, coverage, (cx, cz)
+
+
+def _perp_dist(p, a, b):
+    (px, pz), (ax, az), (bx, bz) = p, a, b
+    dx, dz = bx - ax, bz - az
+    L = math.hypot(dx, dz)
+    if L < 1e-9:
+        return math.hypot(px - ax, pz - az)
+    return abs((px - ax) * dz - (pz - az) * dx) / L
+
+
+def _rdp(pts, eps):
+    """Ramer–Douglas–Peucker: прорежает ломаную, оставляя вершины-«углы» (отклонение > eps)."""
+    if len(pts) < 3:
+        return list(pts)
+    dmax, idx = 0.0, 0
+    for i in range(1, len(pts) - 1):
+        d = _perp_dist(pts[i], pts[0], pts[-1])
+        if d > dmax:
+            dmax, idx = d, i
+    if dmax > eps:
+        return _rdp(pts[:idx + 1], eps)[:-1] + _rdp(pts[idx:], eps)
+    return [pts[0], pts[-1]]
+
+
+def room_walls(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=None,
+               eps: float = 0.12, min_wall_m: float = 0.4):
+    """Стены комнаты из контура: спрямляем зубчатый силуэт (RDP) в прямые сегменты.
+    Сегмент длиннее `min_wall_m` = СТЕНА (короткие — углы/проёмы/шум). Возвращает
+    dict: polygon (сырой контур), vertices (углы), walls [(p0,p1,len)], coverage, center."""
+    poly, coverage, ctr = room_contour(cells, cell_m, nbins, center)
+    verts = _rdp(poly + [poly[0]], eps)                     # замыкаем перед прорежением
+    walls = []
+    for i in range(len(verts) - 1):
+        p0, p1 = verts[i], verts[i + 1]
+        L = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+        if L >= min_wall_m:
+            walls.append((p0, p1, L))
+    return {"polygon": poly, "vertices": verts, "walls": walls,
+            "coverage": coverage, "center": ctr}
 
 
 # ───────────────────────── Этап 2: объекты / мебель ─────────────────────────
@@ -303,14 +350,17 @@ def selftest() -> bool:
     раздувать контур (она ближе к центру, чем стены)."""
     m = WorldModel(voxel_m=0.05)
     rgb = (180, 180, 180)
-    # стены: кольцо по периметру [-1..1] м, шаг 0.05
+    # стены: кольцо по периметру [-1..1] м, шаг 0.05, ТОЛЩИНОЙ 3 вокселя внутрь
+    # (реальная стена из глубины — полоса; для density-поддержки нужна толщина).
     step = 0.05
     n = int(2.0 / step) + 1
     for t in range(n):
         c = -1.0 + t * step
-        for (x, z) in [(-1.0, c), (1.0, c), (c, -1.0), (c, 1.0)]:
-            for _ in range(4):
-                m.integrate_point(x, 0.0, z, rgb, 1.0)
+        for d in range(3):
+            dd = d * step
+            for (x, z) in [(-1.0 + dd, c), (1.0 - dd, c), (c, -1.0 + dd), (c, 1.0 - dd)]:
+                for _ in range(4):
+                    m.integrate_point(x, 0.0, z, rgb, 1.0)
     # мебель: блок 8×8 внутри около (0.3, 0.2) — крупный статичный объект
     for dx in range(8):
         for dz in range(8):
@@ -332,10 +382,14 @@ def selftest() -> bool:
     # мебель не должна попасть в стену: её центр заметно ближе центра, чем стена
     inside_ok = obj_ok and math.hypot(furn[0]["cx"], furn[0]["cz"]) < 0.9
 
-    ok = span_ok and cover_ok and wall_ok and obj_ok and near_ok and inside_ok
-    print("SCENE-ANALYSIS selftest: контур %.2f×%.2f м (%.0f%%, rmax=%.2f) | объектов=%d "
+    # стены: квадратное кольцо должно спрямиться в немного длинных сегментов
+    rw = room_walls(cells, cell_m=0.06, center=(0.0, 0.0))
+    walls_ok = 3 <= len(rw["walls"]) <= 8 and any(w[2] > 1.5 for w in rw["walls"])
+
+    ok = span_ok and cover_ok and wall_ok and obj_ok and near_ok and inside_ok and walls_ok
+    print("SCENE-ANALYSIS selftest: контур %.2f×%.2f м (%.0f%%, rmax=%.2f) | стен=%d | объектов=%d "
           "мебель=%d центр(%.2f,%.2f) площадь=%.2fм² -> %s"
-          % (mt["span_x"], mt["span_z"], cov * 100, rmax, len(objs), len(furn),
+          % (mt["span_x"], mt["span_z"], cov * 100, rmax, len(rw["walls"]), len(objs), len(furn),
              furn[0]["cx"] if furn else 0, furn[0]["cz"] if furn else 0,
              furn[0]["area_m2"] if furn else 0, "OK" if ok else "FAIL"))
     return ok
@@ -390,6 +444,12 @@ def _report(path: str):
           % (mt["points"], mt["span_x"], mt["span_z"], mt["perimeter"], cov * 100))
     if cov < 0.6:
         print("  ⚠ покрытие низкое — комната отснята лишь частично (нужен объезд периметра)")
+
+    rw = room_walls(cells)
+    print("СТЕНЫ: %d сегментов (после спрямления), углов %d"
+          % (len(rw["walls"]), len(rw["vertices"]) - 1))
+    for i, (p0, p1, L) in enumerate(sorted(rw["walls"], key=lambda w: -w[2])[:6]):
+        print("  стена %d: (%.2f,%.2f)→(%.2f,%.2f) длина %.2f м" % (i, p0[0], p0[1], p1[0], p1[1], L))
 
     objs, _ = object_clusters(cells)
     print("ОБЪЕКТЫ внутри контура: %d (мебель/крупных %d)"
