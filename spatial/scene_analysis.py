@@ -236,6 +236,50 @@ def object_clusters(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=
     return objs, (cx, cz)
 
 
+# ───────────────────────── Этап 3: статика vs динамика ─────────────────────────
+
+DYN_RATIO = 0.30      # порог «двигался» по одно-карточной miss-подписи
+
+
+def label_dynamics(objs, dyn_ratio: float = DYN_RATIO):
+    """Одно-карточная разметка: объект «двигался», если сквозь его место часто светили
+    насквозь (miss/(hits+miss) высок) — т.е. он там был, но потом исчезал. Работает,
+    когда карта строилась с карвингом луча (integrate_ray); на старых картах miss=0."""
+    for o in objs:
+        o["moved"] = o["dyn_ratio"] >= dyn_ratio
+    return objs
+
+
+def diff_maps(model_a, model_b, cell_m: float = 0.06, l_thresh: float = L_CONFIDENT,
+              min_cells: int = 3):
+    """Дифф ДВУХ проходов (должны быть в одной системе координат — релокализованы).
+    Ячейка занята в A и пуста в B → объект УШЁЛ; пуста в A, занята в B → ПРИШЁЛ;
+    занята в обоих → статика (стены/мебель на месте). Кластеры изменившихся ячеек =
+    движущиеся объекты. Это надёжный детектор движения (не зависит от карвинга)."""
+    ca = floor_cells(model_a, cell_m, l_thresh)
+    cb = floor_cells(model_b, cell_m, l_thresh)
+    ka, kb = set(ca), set(cb)
+    vanished = ka - kb
+    appeared = kb - ka
+    stable = ka & kb
+    moved = []
+    for comp in _connected(vanished | appeared):
+        if len(comp) < min_cells:
+            continue
+        van = sum(1 for k in comp if k in vanished)
+        app = sum(1 for k in comp if k in appeared)
+        gxs = [g[0] for g in comp]
+        gzs = [g[1] for g in comp]
+        moved.append({
+            "cx": sum(gxs) / len(gxs) * cell_m, "cz": sum(gzs) / len(gzs) * cell_m,
+            "cells": len(comp), "vanished": van, "appeared": app,
+            "state": "ушёл" if app == 0 else ("пришёл" if van == 0 else "переместился"),
+        })
+    moved.sort(key=lambda o: o["cells"], reverse=True)
+    return {"stable_cells": len(stable), "vanished_cells": len(vanished),
+            "appeared_cells": len(appeared), "moved_objects": moved}
+
+
 def contour_metrics(polygon, center):
     """Габариты и периметр контура (для отчёта)."""
     if len(polygon) < 3:
@@ -297,6 +341,38 @@ def selftest() -> bool:
     return ok
 
 
+def selftest_dynamics() -> bool:
+    """Синтетика динамики: статичная стена (одинакова в обоих проходах) + объект,
+    который ПЕРЕЕХАЛ из (0.5,0) в (-0.5,0). Дифф должен: стену не трогать, у (0.5,0)
+    показать 'ушёл', у (-0.5,0) — 'пришёл'."""
+    def build(obj_x):
+        m = WorldModel(voxel_m=0.05)
+        for t in range(41):                                # статичная стена z=+1.0
+            x = -1.0 + t * 0.05
+            for _ in range(4):
+                m.integrate_point(x, 0.0, 1.0, (180, 180, 180), 1.0)
+        for dx in range(6):                                # объект 6×6 у obj_x
+            for dz in range(6):
+                for _ in range(4):
+                    m.integrate_point(obj_x + dx * 0.05, 0.0, dz * 0.05, (130, 90, 60), 1.0)
+        return m
+
+    a = build(0.5)
+    b = build(-0.5)
+    d = diff_maps(a, b, cell_m=0.06)
+    mv = d["moved_objects"]
+    left = [o for o in mv if o["state"] == "ушёл"]
+    came = [o for o in mv if o["state"] == "пришёл"]
+    left_ok = any(o["cx"] > 0.3 for o in left)
+    came_ok = any(o["cx"] < -0.3 for o in came)
+    stable_ok = d["stable_cells"] >= 10                    # стена осталась стабильной
+    ok = left_ok and came_ok and stable_ok
+    print("SCENE-ANALYSIS dynamics selftest: стабильно=%d ушёл=%d пришёл=%d "
+          "(объект (0.5,0)->(-0.5,0)) -> %s"
+          % (d["stable_cells"], len(left), len(came), "OK" if ok else "FAIL"))
+    return ok
+
+
 def _report(path: str):
     m = WorldModel()
     if not m.load(path):
@@ -325,11 +401,29 @@ def _report(path: str):
                  o["color"][0], o["color"][1], o["color"][2], o["dyn_ratio"] * 100))
 
 
+def _diff_report(path_a: str, path_b: str):
+    a, b = WorldModel(), WorldModel()
+    if not a.load(path_a) or not b.load(path_b):
+        print("не загрузить одну из карт"); return
+    clean(a); clean(b)
+    d = diff_maps(a, b)
+    print("ДИФФ %s vs %s: стабильно %d | исчезло %d | появилось %d ячеек"
+          % (os.path.basename(path_a), os.path.basename(path_b),
+             d["stable_cells"], d["vanished_cells"], d["appeared_cells"]))
+    print("ДВИГАВШИЕСЯ объекты: %d" % len(d["moved_objects"]))
+    for i, o in enumerate(d["moved_objects"][:10]):
+        print("  #%d %-12s центр(%.2f,%.2f) ячеек=%d (исчез=%d появ=%d)"
+              % (i, o["state"], o["cx"], o["cz"], o["cells"], o["vanished"], o["appeared"]))
+
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if "--selftest" in sys.argv or not args:
-        ok = selftest()
+        ok = selftest() and selftest_dynamics()
         if not args:
             sys.exit(0 if ok else 1)
-    for p in args:
-        _report(p)
+    if len(args) == 2:                                     # дифф двух проходов (Этап 3)
+        _diff_report(args[0], args[1])
+    else:
+        for p in args:
+            _report(p)
