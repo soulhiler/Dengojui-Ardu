@@ -162,7 +162,9 @@ def main():
 
             yaw = vo.yaw_of(pose[:3, :3])
             P = Pose(yaw=yaw, tx=float(pose[0, 3]), tz=float(pose[2, 3]))
-            model.integrate_frame(list(DF.dense_points_from_depth(Z, rgb, intr, P)))
+            # карвинг луча (origin = камера): чистит свободное место + копит miss-подпись
+            model.integrate_frame_rays((P.tx, P.ty, P.tz),
+                                       list(DF.dense_points_from_depth(Z, rgb, intr, P)))
             frames += 1
             st = model.stats()
             dist = math.hypot(pose[0, 3], pose[2, 3])

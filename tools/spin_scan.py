@@ -204,14 +204,15 @@ def main():
                         pose_est.nudge_yaw(rl["delta_rad"], RELOC_GAIN)
                         reloc_n += 1
                         pose = pose_est.peek_pose()
+                origin = (pose.tx, pose.ty, pose.tz)          # позиция камеры для карвинга луча
                 if DENSE and backend is not None:
                     jpeg = capture()                          # плотная глубина из видео
                     if jpeg:
-                        model.integrate_frame(list(
+                        model.integrate_frame_rays(origin, list(
                             DF.frame_to_dense_world(jpeg, tf, pose, backend, cam_hfov_deg=CAM_HFOV)))
                         frames += 1
                 else:
-                    model.integrate_frame(list(frame_to_world(tf, b"", pose, cfg)))
+                    model.integrate_frame_rays(origin, list(frame_to_world(tf, b"", pose, cfg)))
                     frames += 1
             now = time.time()
             if now - last_report > 4.0:

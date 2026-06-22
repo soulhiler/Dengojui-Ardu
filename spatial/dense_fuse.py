@@ -77,7 +77,7 @@ def run_live(ip, frames, backend_name, hfov):
             continue
         sp = list(frame_to_world(tof, b"", pose, cfg))         # 64 ToF-зоны (для сравнения)
         dn = list(DF.frame_to_dense_world(jpeg, tof, pose, backend, cam_hfov_deg=hfov))
-        model.integrate_frame(dn)
+        model.integrate_frame_rays((pose.tx, pose.ty, pose.tz), dn)   # карвинг луча
         sparse_sum += len(sp)
         dense_sum += len(dn)
         print("  кадр %d: sparse=%d  dense=%d  (вокселей=%d)" % (i, len(sp), len(dn), len(model.vox)))
