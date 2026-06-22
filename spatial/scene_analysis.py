@@ -117,36 +117,123 @@ def _median_smooth(radii, nbins, win=2):
     return out
 
 
-def room_contour(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=None, smooth=2):
-    """Силуэт помещения радиальным обходом из центра: на каждый угловой сектор берём
-    САМУЮ ДАЛЬНЮЮ занятую ячейку (это стена; ближняя мебель её не подменяет, а если
-    мебель ЗАСЛОНЯЕТ стену — контур честно проваливается внутрь = окклюзия). Пропуски
-    интерполируются, радиальный профиль сглаживается медианой (денойз глубины).
+def _angle_bin(x, z, cx, cz, nbins):
+    a = math.atan2(z - cz, x - cx)
+    return int((a + math.pi) / (2 * math.pi) * nbins) % nbins
 
-    Возвращает: polygon [(x,z)...] по секторам, coverage (доля секторов С ДАННЫМИ —
-    насколько периметр реально отснят, до интерполяции), center (cx,cz)."""
+
+def contour_radii(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=None, smooth=2):
+    """Радиальный профиль контура: на каждый угловой сектор — самая дальняя занятая
+    ячейка (стена). Пропуски интерполируются, профиль сглаживается медианой.
+    Возвращает (radii[nbins], center(cx,cz), coverage). Переиспользуется и контуром,
+    и классификацией «стена vs нутро» (Этап 2)."""
     if not cells:
-        return [], 0.0, (0.0, 0.0)
+        return [0.0] * nbins, (0.0, 0.0), 0.0
     if center is None:
         cx = sum(gx for gx, _ in cells) / len(cells) * cell_m
         cz = sum(gz for _, gz in cells) / len(cells) * cell_m
     else:
         cx, cz = center
     radii = [None] * nbins
-    for (gx, gz), c in cells.items():
+    for (gx, gz) in cells:
         x, z = gx * cell_m, gz * cell_m
         r = math.hypot(x - cx, z - cz)
-        a = math.atan2(z - cz, x - cx)
-        b = int((a + math.pi) / (2 * math.pi) * nbins) % nbins
+        b = _angle_bin(x, z, cx, cz, nbins)
         if radii[b] is None or r > radii[b]:
             radii[b] = r
     coverage = sum(1 for r in radii if r is not None) / nbins
     radii = _median_smooth(_fill_gaps(radii, nbins), nbins, smooth)
+    return radii, (cx, cz), coverage
+
+
+def room_contour(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=None, smooth=2):
+    """Силуэт помещения (полигон) из радиального профиля. Самая дальняя занятая ячейка
+    в секторе = стена; ближняя мебель её не подменяет, а заслонённая стена честно даёт
+    провал контура внутрь (окклюзия). Возвращает (polygon[(x,z)], coverage, center)."""
+    radii, (cx, cz), coverage = contour_radii(cells, cell_m, nbins, center, smooth)
     polygon = []
     for b in range(nbins):
         a = -math.pi + 2 * math.pi * (b + 0.5) / nbins
         polygon.append((cx + radii[b] * math.cos(a), cz + radii[b] * math.sin(a)))
     return polygon, coverage, (cx, cz)
+
+
+# ───────────────────────── Этап 2: объекты / мебель ─────────────────────────
+
+def _connected(cell_set):
+    """Связные компоненты на сетке (8-соседство). cell_set: множество (gx,gz)."""
+    seen = set()
+    comps = []
+    for start in cell_set:
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        comp = []
+        while stack:
+            gx, gz = stack.pop()
+            comp.append((gx, gz))
+            for dx in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    if dx == 0 and dz == 0:
+                        continue
+                    nb = (gx + dx, gz + dz)
+                    if nb in cell_set and nb not in seen:
+                        seen.add(nb)
+                        stack.append(nb)
+        comps.append(comp)
+    return comps
+
+
+def object_clusters(cells: dict, cell_m: float = 0.06, nbins: int = 120, center=None,
+                    wall_margin_m: float = 0.20, min_cells: int = 4,
+                    furniture_area_m2: float = 0.06):
+    """Этап 2: объекты ВНУТРИ контура (стены и пристенок исключаем по радиусу), затем
+    кластеризация связных ячеек. Каждый объект — словарь: центр (x,z), габарит, площадь
+    следа, высота (ymin..ymax), цвет, hits/miss (для Этапа 3), класс (мебель/мелкий).
+
+    Мебель = крупный статичный объект (площадь следа >= furniture_area_m2). «Двигался ли
+    он» решает Этап 3 — мебель тоже может переместиться."""
+    radii, (cx, cz), _ = contour_radii(cells, cell_m, nbins, center)
+    interior = {}
+    for (gx, gz), c in cells.items():
+        x, z = gx * cell_m, gz * cell_m
+        r = math.hypot(x - cx, z - cz)
+        b = _angle_bin(x, z, cx, cz, nbins)
+        if r < radii[b] - wall_margin_m:          # внутри, не у стены
+            interior[(gx, gz)] = c
+    objs = []
+    for comp in _connected(set(interior)):
+        if len(comp) < min_cells:
+            continue
+        gxs = [g[0] for g in comp]
+        gzs = [g[1] for g in comp]
+        r = g_ = bl = 0.0
+        hits = miss = 0
+        wsum = 0.0
+        ymin = ymax = None
+        for k in comp:
+            c = interior[k]
+            r += c["r"]; g_ += c["g"]; bl += c["b"]; wsum += c["w"]
+            hits += c["hits"]; miss += c["miss"]
+            ymin = c["ymin"] if ymin is None else min(ymin, c["ymin"])
+            ymax = c["ymax"] if ymax is None else max(ymax, c["ymax"])
+        wsum = wsum or 1.0
+        area = len(comp) * cell_m * cell_m
+        objs.append({
+            "cx": (sum(gxs) / len(gxs)) * cell_m, "cz": (sum(gzs) / len(gzs)) * cell_m,
+            "size_x": (max(gxs) - min(gxs) + 1) * cell_m,
+            "size_z": (max(gzs) - min(gzs) + 1) * cell_m,
+            "cells": len(comp), "area_m2": area,
+            "y_min": ymin, "y_max": ymax, "height": (ymax - ymin) if ymin is not None else 0.0,
+            "color": (int(r / wsum), int(g_ / wsum), int(bl / wsum)),
+            "hits": hits, "miss": miss,
+            "dyn_ratio": miss / (hits + miss) if (hits + miss) else 0.0,
+            "kind": "мебель/крупный" if area >= furniture_area_m2 else "мелкий",
+            "_comp": comp,
+        })
+    objs.sort(key=lambda o: o["area_m2"], reverse=True)
+    return objs, (cx, cz)
 
 
 def contour_metrics(polygon, center):
@@ -180,9 +267,9 @@ def selftest() -> bool:
         for (x, z) in [(-1.0, c), (1.0, c), (c, -1.0), (c, 1.0)]:
             for _ in range(4):
                 m.integrate_point(x, 0.0, z, rgb, 1.0)
-    # мебель: блок внутри около (0.3, 0.2)
-    for dx in range(4):
-        for dz in range(4):
+    # мебель: блок 8×8 внутри около (0.3, 0.2) — крупный статичный объект
+    for dx in range(8):
+        for dz in range(8):
             for _ in range(4):
                 m.integrate_point(0.3 + dx * step, 0.0, 0.2 + dz * step, (120, 90, 60), 1.0)
 
@@ -191,12 +278,22 @@ def selftest() -> bool:
     mt = contour_metrics(poly, ctr)
     span_ok = 1.7 <= mt["span_x"] <= 2.3 and 1.7 <= mt["span_z"] <= 2.3
     cover_ok = cov >= 0.9
-    # контур не должен «прилипнуть» к мебели: макс. радиус ~ к стене (>0.9 м), не к мебели
     rmax = max(math.hypot(x, z) for (x, z) in poly) if poly else 0
-    wall_ok = rmax > 0.9
-    ok = span_ok and cover_ok and wall_ok
-    print("SCENE-ANALYSIS selftest: контур span=%.2f×%.2f м покрытие=%.0f%% rmax=%.2f -> %s"
-          % (mt["span_x"], mt["span_z"], cov * 100, rmax, "OK" if ok else "FAIL"))
+    wall_ok = rmax > 0.9                                   # контур у стены, не у мебели
+
+    objs, _ = object_clusters(cells, cell_m=0.06, center=(0.0, 0.0))
+    furn = [o for o in objs if o["kind"] == "мебель/крупный"]
+    obj_ok = len(furn) >= 1
+    near_ok = obj_ok and 0.2 <= furn[0]["cx"] <= 0.8 and 0.1 <= furn[0]["cz"] <= 0.7
+    # мебель не должна попасть в стену: её центр заметно ближе центра, чем стена
+    inside_ok = obj_ok and math.hypot(furn[0]["cx"], furn[0]["cz"]) < 0.9
+
+    ok = span_ok and cover_ok and wall_ok and obj_ok and near_ok and inside_ok
+    print("SCENE-ANALYSIS selftest: контур %.2f×%.2f м (%.0f%%, rmax=%.2f) | объектов=%d "
+          "мебель=%d центр(%.2f,%.2f) площадь=%.2fм² -> %s"
+          % (mt["span_x"], mt["span_z"], cov * 100, rmax, len(objs), len(furn),
+             furn[0]["cx"] if furn else 0, furn[0]["cz"] if furn else 0,
+             furn[0]["area_m2"] if furn else 0, "OK" if ok else "FAIL"))
     return ok
 
 
@@ -217,6 +314,15 @@ def _report(path: str):
           % (mt["points"], mt["span_x"], mt["span_z"], mt["perimeter"], cov * 100))
     if cov < 0.6:
         print("  ⚠ покрытие низкое — комната отснята лишь частично (нужен объезд периметра)")
+
+    objs, _ = object_clusters(cells)
+    print("ОБЪЕКТЫ внутри контура: %d (мебель/крупных %d)"
+          % (len(objs), sum(1 for o in objs if o["kind"] == "мебель/крупный")))
+    for i, o in enumerate(objs[:8]):
+        print("  #%d %-13s центр(%.2f,%.2f) %.2f×%.2f м, площадь %.2f м², "
+              "цвет#%02x%02x%02x, miss/(h+m)=%.0f%%"
+              % (i, o["kind"], o["cx"], o["cz"], o["size_x"], o["size_z"], o["area_m2"],
+                 o["color"][0], o["color"][1], o["color"][2], o["dyn_ratio"] * 100))
 
 
 if __name__ == "__main__":
