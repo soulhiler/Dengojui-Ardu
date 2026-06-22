@@ -353,11 +353,18 @@ def main():
               % (e0, e1, drift_before, drift_after, verdict))
 
     # --- пере-вливание в исправленных позах ---
+    # С КАРВИНГОМ луча (origin = позиция камеры): свободное место чистится, накапливается
+    # miss-подпись → одно-карточная динамика (scene_analysis) и чистые стены. --nocarve откл.
+    carve = "--nocarve" not in sys.argv
     model = WorldModel(voxel_m=0.05)
     for k, kf in enumerate(kfs):
         x, y, th = corrected[k]
-        model.integrate_frame(list(DF.dense_points_from_depth(kf["Z"], kf["rgb"], kf["intr"],
-                                                              Pose(yaw=th, tx=x, tz=y))))
+        pose = Pose(yaw=th, tx=x, tz=y)
+        pts = list(DF.dense_points_from_depth(kf["Z"], kf["rgb"], kf["intr"], pose))
+        if carve:
+            model.integrate_frame_rays((pose.tx, pose.ty, pose.tz), pts)
+        else:
+            model.integrate_frame(pts)
     st = model.stats()
     print("ИТОГ: кадров=%d петель=%d вокселей=%d уверенных=%d" % (n, loops, st["voxels"], st["confident"]))
     here = os.path.dirname(os.path.abspath(__file__))
