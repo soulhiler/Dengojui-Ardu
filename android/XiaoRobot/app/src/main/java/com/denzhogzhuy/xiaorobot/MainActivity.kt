@@ -321,6 +321,8 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putString("host", if (field.isEmpty()) "xiao-cam.local" else field).apply()
         connected = true
         binding.btnConnect.text = getString(R.string.disconnect_session)
+        // Маршрутизировать запросы через Wi-Fi (робот в LAN/без интернета — не через моб. данные).
+        WifiBinder.bindToWifi(this)
 
         val auto = field.isEmpty() ||
             field.equals("xiao-cam.local", ignoreCase = true) ||
@@ -353,11 +355,16 @@ class MainActivity : AppCompatActivity() {
     /** Прямое подключение к собственной точке робота (SoftAP). Телефон должен быть в сети XIAO-Robot. */
     private fun connectSoftAp() {
         if (connected) disconnectAll()
+        // Привязка к Wi-Fi: сеть робота без интернета, иначе Android уведёт запрос в моб. данные.
+        val bound = WifiBinder.bindToWifi(this)
         binding.editIp.setText("192.168.4.1")
         prefs.edit().putString("host", "192.168.4.1").apply()
         connected = true
         binding.btnConnect.text = getString(R.string.disconnect_session)
-        setStatusPart("прямое подключение к SoftAP 192.168.4.1…")
+        setStatusPart(
+            if (bound) "SoftAP: трафик через Wi-Fi → 192.168.4.1…"
+            else "нет Wi-Fi — подключись к сети XIAO-Robot",
+        )
         startSessions("192.168.4.1")
     }
 
@@ -415,6 +422,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun disconnectAll() {
         discovery.stop()
+        WifiBinder.unbind(this)          // вернуть обычную маршрутизацию
         connected = false
         micOn = false
         binding.btnMic.text = getString(R.string.mic_on)
