@@ -69,6 +69,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnConnect.setOnClickListener {
             if (connected) disconnectAll() else connectAll()
         }
+        // Долгое нажатие «Подключить» — задать токен API (для интернета/защиты управления).
+        binding.btnConnect.setOnLongClickListener { askApiToken(); true }
+        // Прямое подключение к собственной точке робота (SoftAP, 192.168.4.1) — без роутера.
+        binding.btnSoftAp.setOnClickListener { connectSoftAp() }
         binding.btnStop.setOnClickListener { sendStop() }
         binding.btnMic.setOnClickListener { toggleMic() }
         binding.btnUpdate.setOnClickListener { askUpdateHost() }
@@ -346,10 +350,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Прямое подключение к собственной точке робота (SoftAP). Телефон должен быть в сети XIAO-Robot. */
+    private fun connectSoftAp() {
+        if (connected) disconnectAll()
+        binding.editIp.setText("192.168.4.1")
+        prefs.edit().putString("host", "192.168.4.1").apply()
+        connected = true
+        binding.btnConnect.text = getString(R.string.disconnect_session)
+        setStatusPart("прямое подключение к SoftAP 192.168.4.1…")
+        startSessions("192.168.4.1")
+    }
+
+    /** Ввод токена API (заголовок X-Auth-Token для эндпоинтов управления; нужен при выходе в интернет). */
+    private fun askApiToken() {
+        val input = android.widget.EditText(this).apply {
+            setText(prefs.getString("api_token", "") ?: "")
+            hint = "пусто = без токена"
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(getString(R.string.api_token_title))
+            .setView(input)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val t = input.text.toString().trim()
+                prefs.edit().putString("api_token", t).apply()
+                drive.token = t
+                setStatusPart(if (t.isEmpty()) "токен очищен" else "токен задан")
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     /** Запуск всех каналов на известном хосте/IP. */
     private fun startSessions(h: String) {
         host = h
         prefs.edit().putString("last_ip", h).apply()
+        drive.token = prefs.getString("api_token", "") ?: ""
         drive.enableBoard(h)
         mjpeg.start(h)
         drive.startSending(h)

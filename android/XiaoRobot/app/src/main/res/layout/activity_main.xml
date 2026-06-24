@@ -23,7 +23,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:hint="@string/hint_ip"
-            app:layout_constraintEnd_toStartOf="@id/btnConnect"
+            app:layout_constraintEnd_toStartOf="@id/btnSoftAp"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent">
 
@@ -34,6 +34,20 @@
                 android:inputType="text"
                 android:text="xiao-cam.local" />
         </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- Прямое подключение к собственной точке робота (SoftAP, 192.168.4.1) -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSoftAp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="@string/connect_softap"
+            app:layout_constraintBottom_toBottomOf="@id/ipLayout"
+            app:layout_constraintEnd_toStartOf="@id/btnConnect"
+            app:layout_constraintTop_toTopOf="@id/ipLayout" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnConnect"
