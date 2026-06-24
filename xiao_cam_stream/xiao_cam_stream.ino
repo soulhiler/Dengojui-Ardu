@@ -72,6 +72,7 @@
 #include "xiao_tof.h"
 #include "xiao_imu.h"
 #include "xiao_http_ota.h"
+#include "xiao_net.h"          // токен-авторизация + SoftAP + онбординг Wi-Fi
 
 #ifndef XIAO_OTA_PASSWORD
 #define XIAO_OTA_PASSWORD ""
@@ -81,8 +82,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 25u;
-static constexpr char kXiaoFwVersion[] = "1.4.2";
+static constexpr uint32_t kXiaoFwBuild = 26u;
+static constexpr char kXiaoFwVersion[] = "1.5.0";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -1061,6 +1062,7 @@ static void applyWifiPsFromFlag() {
 }
 
 static void handleControl() {
+  if (!xiaoRequireAuth(server)) return;
   if (server.hasArg("cam")) {
     const bool want = server.arg("cam").toInt() != 0;
     gCtrlCamEnabled = gCamOk && want;
@@ -1134,6 +1136,7 @@ static void handleControl() {
 
 #if XIAO_DRIVE_ENABLE
 static void handleDrive() {
+  if (!xiaoRequireAuth(server)) return;
   if (!server.hasArg("stop")) {
     if (!server.hasArg("l") && !server.hasArg("r")) {
       server.send(400, F("text/plain; charset=utf-8"),
@@ -1190,6 +1193,7 @@ static void handleRobotStatus() {
 }
 
 static void handleScan360() {
+  if (!xiaoRequireAuth(server)) return;
   if (!xiaoTofIsOk()) {
     server.send(503, F("application/json; charset=utf-8"), F("{\"ok\":0,\"error\":\"tof\"}"));
     return;
@@ -1225,6 +1229,7 @@ static void handleScan360() {
 }
 
 static void handleBeep() {
+  if (!xiaoRequireAuth(server)) return;
   const uint16_t hz = server.hasArg("hz") ? static_cast<uint16_t>(server.arg("hz").toInt()) : 880;
   const uint16_t ms = server.hasArg("ms") ? static_cast<uint16_t>(server.arg("ms").toInt()) : 250;
   const String ch = server.hasArg("ch") ? server.arg("ch") : F("A");
@@ -1237,6 +1242,7 @@ static void handleBeep() {
 }
 
 static void handleMelody() {
+  if (!xiaoRequireAuth(server)) return;
   const uint8_t id = server.hasArg("id") ? static_cast<uint8_t>(server.arg("id").toInt()) : 0;
   const String ch = server.hasArg("ch") ? server.arg("ch") : F("A");
   if (server.hasArg("gain")) {
@@ -1382,8 +1388,15 @@ void setup() {
   }
 #endif
 
-  WiFi.mode(WIFI_STA);
+  // AP+STA: робот ОДНОВРЕМЕННО держит свою точку доступа (прямая связь робот↔телефон
+  // без роутера, фикс. 192.168.4.1) и заходит в домашний Wi-Fi. HTTP-сервер слушает оба.
+  WiFi.mode(WIFI_AP_STA);
   WiFi.setHostname("xiao-cam");
+  const IPAddress apip = xiaoApStart();
+  Serial.print(F("SoftAP \""));
+  Serial.print(XIAO_AP_SSID);
+  Serial.print(F("\" @ "));
+  Serial.println(apip);
   applyWifiPsFromFlag();
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
@@ -1392,6 +1405,13 @@ void setup() {
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.onEvent(wifiOnArduinoEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 
+  // Сохранённые онбордингом креды (страница /wifi) — в приоритете, затем дефолтные из secrets.
+  {
+    const String savedSsid = xiaoWifiSavedSsid();
+    if (savedSsid.length()) {
+      wifiMulti.addAP(savedSsid.c_str(), xiaoWifiSavedPass().c_str());
+    }
+  }
   wifiMulti.addAP(XIAO_WIFI_SSID_1, kWifiPass);
   wifiMulti.addAP(XIAO_WIFI_SSID_2, kWifiPass);
 
@@ -1412,40 +1432,44 @@ void setup() {
     delay(120);
   }
   Serial.println();
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println(F("WiFi: не удалось. Проверь имя сети на роутере и пароль."));
-    statusLedSet(StatusLed::ErrorWifi);
-    gHttpServerStarted = false;
-    telemetryBleInit();
-    return;
-  }
-  Serial.print(F("WiFi OK, IP: "));
-  Serial.println(WiFi.localIP());
-  Serial.print(F("SSID: "));
-  Serial.println(WiFi.SSID());
 
   telemetryBleInit();
 
-  if (MDNS.begin("xiao-cam")) {
-    MDNS.addService("http", "tcp", 80);
-    Serial.println(F("mDNS: http://xiao-cam.local/"));
-  } else {
-    Serial.println(F("mDNS: ошибка инициализации"));
-  }
-
-  if (XIAO_OTA_ENABLE) {
-    ArduinoOTA.setHostname("xiao-cam");
-    ArduinoOTA.setPassword(XIAO_OTA_PASSWORD);
-    ArduinoOTA.onStart([]() { Serial.println(F("OTA: начало")); });
-    ArduinoOTA.onEnd([]() { Serial.println(F("OTA: готово, перезагрузка")); });
-    ArduinoOTA.onError([](ota_error_t e) {
-      Serial.print(F("OTA: ошибка "));
-      Serial.println(static_cast<unsigned>(e));
-    });
-    ArduinoOTA.begin();
-    gArduinoOtaReady = true;
-    Serial.print(F("OTA Wi-Fi: TCP 3232, пароль из secrets, IP "));
+  // HTTP-сервер поднимаем ВСЕГДА (через SoftAP и/или STA). mDNS/OTA — только при STA.
+  const bool staOk = (WiFi.status() == WL_CONNECTED);
+  if (staOk) {
+    Serial.print(F("WiFi OK, IP: "));
     Serial.println(WiFi.localIP());
+    Serial.print(F("SSID: "));
+    Serial.println(WiFi.SSID());
+    if (MDNS.begin("xiao-cam")) {
+      MDNS.addService("http", "tcp", 80);
+      Serial.println(F("mDNS: http://xiao-cam.local/"));
+    } else {
+      Serial.println(F("mDNS: ошибка инициализации"));
+    }
+    if (XIAO_OTA_ENABLE) {
+      ArduinoOTA.setHostname("xiao-cam");
+      ArduinoOTA.setPassword(XIAO_OTA_PASSWORD);
+      ArduinoOTA.onStart([]() { Serial.println(F("OTA: начало")); });
+      ArduinoOTA.onEnd([]() { Serial.println(F("OTA: готово, перезагрузка")); });
+      ArduinoOTA.onError([](ota_error_t e) {
+        Serial.print(F("OTA: ошибка "));
+        Serial.println(static_cast<unsigned>(e));
+      });
+      ArduinoOTA.begin();
+      gArduinoOtaReady = true;
+      Serial.print(F("OTA Wi-Fi: TCP 3232, пароль из secrets, IP "));
+      Serial.println(WiFi.localIP());
+    }
+  } else {
+    Serial.println(F("WiFi STA: домашняя сеть не найдена — работаю через SoftAP "
+                     "(онбординг: http://192.168.4.1/wifi)"));
+  }
+  if (xiaoApiTokenSet()) {
+    Serial.println(F("API: токен-авторизация ВКЛ на /drive /control /scan360 /beep /melody"));
+  } else {
+    Serial.println(F("API: токен НЕ задан (открыто). Для интернета задай XIAO_API_TOKEN в secrets.h"));
   }
 
   server.on("/", HTTP_GET, handleRoot);
@@ -1463,6 +1487,8 @@ void setup() {
   server.on("/beep", HTTP_GET, handleBeep);
   server.on("/melody", HTTP_GET, handleMelody);
 #endif
+  xiaoNetRegisterRoutes();        // /wifi, /savewifi — онбординг домашней сети
+  xiaoAuthCollectHeaders();       // читать заголовок X-Auth-Token
   xiaoHttpOtaRegister();
   server.begin();
   gHttpServerStarted = true;
