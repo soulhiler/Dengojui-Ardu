@@ -3,6 +3,8 @@
     <string name="app_name">XIAO Robot</string>
     <string name="hint_ip">IP или пусто = авто (mDNS xiao‑cam.local)</string>
     <string name="connect">Подключить</string>
+    <string name="connect_softap">AP</string>
+    <string name="api_token_title">Токен API (для интернета; пусто = без токена)</string>
     <string name="disconnect_session">Отключить</string>
     <string name="motor_stop">Стоп моторы</string>
     <string name="mic_on">Звук вкл</string>

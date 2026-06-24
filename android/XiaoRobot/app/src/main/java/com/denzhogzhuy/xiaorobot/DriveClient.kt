@@ -13,6 +13,8 @@ class DriveClient(private val scope: CoroutineScope) {
     private var driveJob: Job? = null
   @Volatile var cmdL: Int = 0
   @Volatile var cmdR: Int = 0
+  /** Токен авторизации эндпоинтов управления (firmware XIAO_API_TOKEN). Пусто = не слать. */
+  @Volatile var token: String = ""
 
     fun enableBoard(host: String) {
         scope.launch(Dispatchers.IO) {
@@ -76,6 +78,7 @@ class DriveClient(private val scope: CoroutineScope) {
                 connectTimeout = 3000
                 readTimeout = 3000
                 requestMethod = "GET"
+                if (token.isNotEmpty()) setRequestProperty("X-Auth-Token", token)
             }
             c.inputStream.use { it.readBytes() }
         } catch (_: Exception) {
