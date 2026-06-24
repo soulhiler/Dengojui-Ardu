@@ -1,5 +1,7 @@
 #pragma once
-/** Звук через обмотки TB6612 (порт uno_motor_test). */
+/** Звук через обмотки TB6612: ЗНАКОПЕРЕМЕННЫЙ ток (вперёд/назад симметрично, среднее ≈ 0)
+ *  — мотор «поёт» на частоте тона, но НЕ вращается. Громкость = доля драйва в полупериоде
+ *  (gAudioPct). Раньше был однонаправленный PWM (постоянная составляющая → мотор ехал). */
 
 #include <Arduino.h>
 #include "drive_config.h"
@@ -27,17 +29,20 @@ static const XiaoNote XIAO_MELODY_PRIVET2[] = {
     {1600, 45}, {780, 75}, {620, 85}, {0, 70}};
 
 static bool gAudioActive = false;
-static uint8_t gTonePwmPin = DRIVE_L_PWM;
+// Пины активного мотора (звук гоним ЗНАКОПЕРЕМЕННО через его обмотку).
+static uint8_t gAudInA = DRIVE_L_IN1;
+static uint8_t gAudInB = DRIVE_L_IN2;
+static uint8_t gAudPwm = DRIVE_L_PWM;
 static const XiaoNote *gMelody = nullptr;
 static uint8_t gMelodyLen = 0;
 static uint8_t gMelodyIndex = 0;
 static unsigned long gMelodyNextAt = 0;
 static uint8_t gAudioPct = 10;
 static uint16_t gWaveHz = 0;
-static uint16_t gWavePeriodUs = 0;
-static uint16_t gWaveOnUs = 0;
-static uint32_t gWaveNextEdgeUs = 0;
-static bool gWaveHigh = false;
+static uint16_t gHalfUs = 0;       // полупериод тона
+static uint16_t gOnUs = 0;         // длительность ДРАЙВА в каждом полупериоде (∝ громкость)
+static uint8_t gPhase = 0;         // 0 вперёд-драйв, 1 тормоз, 2 назад-драйв, 3 тормоз
+static uint32_t gPhaseEndUs = 0;
 
 bool xiaoAudioIsActive() {
   return gAudioActive;
@@ -53,66 +58,90 @@ static uint8_t xiaoAudioParseChannel(const char *s) {
   return DRIVE_L_PWM;
 }
 
+// Выбрать активный мотор; второй — выключить.
 static void xiaoAudioArmPath(uint8_t pwmPin) {
   if (pwmPin == DRIVE_R_PWM) {
-    digitalWrite(DRIVE_R_IN1, HIGH);
-    digitalWrite(DRIVE_R_IN2, LOW);
+    gAudInA = DRIVE_R_IN1;
+    gAudInB = DRIVE_R_IN2;
+    gAudPwm = DRIVE_R_PWM;
     digitalWrite(DRIVE_L_IN1, LOW);
     digitalWrite(DRIVE_L_IN2, LOW);
     analogWrite(DRIVE_L_PWM, 0);
   } else {
-    digitalWrite(DRIVE_L_IN1, HIGH);
-    digitalWrite(DRIVE_L_IN2, LOW);
+    gAudInA = DRIVE_L_IN1;
+    gAudInB = DRIVE_L_IN2;
+    gAudPwm = DRIVE_L_PWM;
     digitalWrite(DRIVE_R_IN1, LOW);
     digitalWrite(DRIVE_R_IN2, LOW);
     analogWrite(DRIVE_R_PWM, 0);
   }
+  pinMode(gAudInA, OUTPUT);
+  pinMode(gAudInB, OUTPUT);
+  pinMode(gAudPwm, OUTPUT);
+  digitalWrite(gAudPwm, LOW);
+}
+
+// Состояние моста активного мотора: drive=false → тормоз (PWM low, ток не идёт);
+// drive=true → драйв в сторону fwd (знакопеременность даёт звук без вращения).
+static inline void xiaoAudioBridge(bool fwd, bool drive) {
+  if (!drive) {
+    digitalWrite(gAudPwm, LOW);
+    return;
+  }
+  digitalWrite(gAudInA, fwd ? HIGH : LOW);
+  digitalWrite(gAudInB, fwd ? LOW : HIGH);
+  digitalWrite(gAudPwm, HIGH);
 }
 
 static void xiaoAudioSetWave(uint16_t hz) {
-  if (hz < 80) {
+  if (hz < 80) {                       // тишина: мост в нейтраль
     gWaveHz = 0;
-    gWavePeriodUs = 0;
-    gWaveOnUs = 0;
-    digitalWrite(gTonePwmPin, LOW);
+    gHalfUs = 0;
+    gOnUs = 0;
+    digitalWrite(gAudPwm, LOW);
+    digitalWrite(gAudInA, LOW);
+    digitalWrite(gAudInB, LOW);
     return;
   }
   if (hz > 5000) {
     hz = 5000;
   }
   gWaveHz = hz;
-  gWavePeriodUs = static_cast<uint16_t>(1000000UL / hz);
-  if (gWavePeriodUs < 100) {
-    gWavePeriodUs = 100;
+  uint16_t periodUs = static_cast<uint16_t>(1000000UL / hz);
+  if (periodUs < 100) {
+    periodUs = 100;
   }
-  gWaveOnUs = static_cast<uint16_t>((uint32_t)gWavePeriodUs * gAudioPct / 100);
-  if (gWaveOnUs < 15) {
-    gWaveOnUs = 15;
+  gHalfUs = periodUs / 2;
+  // Драйв занимает gAudioPct% каждого полупериода (симметрично вперёд/назад → среднее 0).
+  gOnUs = static_cast<uint16_t>((uint32_t)gHalfUs * gAudioPct / 100);
+  if (gOnUs < 8) {
+    gOnUs = 8;
   }
-  if (gWaveOnUs > gWavePeriodUs - 15) {
-    gWaveOnUs = gWavePeriodUs - 15;
+  if (gOnUs > gHalfUs) {
+    gOnUs = gHalfUs;
   }
-  gWaveHigh = false;
-  digitalWrite(gTonePwmPin, LOW);
-  gWaveNextEdgeUs = micros() + 60;
+  gPhase = 0;
+  xiaoAudioBridge(true, true);         // старт: вперёд-драйв
+  gPhaseEndUs = micros() + gOnUs;
 }
 
+// 4 фазы за период: вперёд-драйв → тормоз → назад-драйв → тормоз. Знакопеременный ток
+// (среднее ≈ 0) → мотор «поёт» на gWaveHz, но НЕ вращается. Громкость ∝ gOnUs.
 static void xiaoAudioWaveTick() {
   if (!gAudioActive || gWaveHz == 0) {
     return;
   }
   const uint32_t nowUs = micros();
-  if (static_cast<int32_t>(nowUs - gWaveNextEdgeUs) < 0) {
+  if (static_cast<int32_t>(nowUs - gPhaseEndUs) < 0) {
     return;
   }
-  if (gWaveHigh) {
-    digitalWrite(gTonePwmPin, LOW);
-    gWaveHigh = false;
-    gWaveNextEdgeUs += static_cast<uint32_t>(gWavePeriodUs - gWaveOnUs);
-  } else {
-    digitalWrite(gTonePwmPin, HIGH);
-    gWaveHigh = true;
-    gWaveNextEdgeUs += gWaveOnUs;
+  gPhase = static_cast<uint8_t>((gPhase + 1) & 3);
+  const uint16_t brakeUs = static_cast<uint16_t>(gHalfUs - gOnUs);
+  switch (gPhase) {
+    case 0: xiaoAudioBridge(true, true);   gPhaseEndUs += gOnUs;   break;  // вперёд-драйв
+    case 1: xiaoAudioBridge(true, false);  gPhaseEndUs += brakeUs; break;  // тормоз
+    case 2: xiaoAudioBridge(false, true);  gPhaseEndUs += gOnUs;   break;  // назад-драйв
+    default: xiaoAudioBridge(false, false); gPhaseEndUs += brakeUs; break; // тормоз
   }
 }
 
@@ -120,7 +149,9 @@ void xiaoAudioStop() {
   gAudioActive = false;
   gMelody = nullptr;
   gWaveHz = 0;
-  digitalWrite(gTonePwmPin, LOW);
+  digitalWrite(gAudPwm, LOW);
+  digitalWrite(gAudInA, LOW);
+  digitalWrite(gAudInB, LOW);
   xiaoDriveStop();
 }
 
@@ -139,10 +170,8 @@ static void xiaoAudioStartBeep(uint16_t hz, uint16_t ms, uint8_t pwmPin) {
   }
   xiaoDriveStop();
   xiaoAudioStop();
-  xiaoAudioArmPath(pwmPin);
+  xiaoAudioArmPath(pwmPin);            // выбирает мотор + настраивает пины
   gAudioActive = true;
-  gTonePwmPin = pwmPin;
-  pinMode(gTonePwmPin, OUTPUT);
   xiaoAudioSetWave(hz);
   gMelody = nullptr;
   gMelodyNextAt = millis() + ms + 10;
@@ -172,10 +201,8 @@ static void xiaoAudioStartMelody(uint8_t id, uint8_t pwmPin) {
   }
   xiaoDriveStop();
   xiaoAudioStop();
-  xiaoAudioArmPath(pwmPin);
+  xiaoAudioArmPath(pwmPin);            // выбирает мотор + настраивает пины
   gAudioActive = true;
-  gTonePwmPin = pwmPin;
-  pinMode(gTonePwmPin, OUTPUT);
   gMelody = mel;
   gMelodyLen = len;
   gMelodyIndex = 0;
