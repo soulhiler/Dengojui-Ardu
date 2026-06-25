@@ -93,25 +93,27 @@ TVS, ложные срабатывания КЗ на бросках моторо
 
 ## 8. Шоппинг-лист (Lazada Thailand)
 
-> ⚠️ Lazada часто отдаёт 403 ботам — ссылки ниже найдены через поиск, **проверь наличие/цену/вариант
-> сам**. Где прямой ссылки нет — дан точный запрос. Не покупай «зарядный USB-C модуль» вместо BMS-защиты.
+> ⚠️ **Прямые product-ссылки Lazada здесь не проверить** — домен `lazada.co.th` заблокирован
+> сетевой политикой окружения (прокси 403), плюс product-ID на Lazada быстро протухают. Поэтому
+> ниже — **ссылки-поиски** (открываются в твоём браузере) + точные запросы. Открой, отсортируй по
+> отзывам/продажам, проверь вариант. **Не путай protection-BMS с зарядным USB-C модулем.**
 
-| Позиция | Что искать / ссылка |
-|---|---|
-| **BMS 2S 25A balance** ⭐ | [2S BMS 10A/15A/**25A** Li-ion (Lazada)](https://www.lazada.co.th/products/2s-32v-37v-bms-10a-15a-25a-li-ion-lifepo4-64v-74v-18650-pcm-i5534196292.html) · [2S 3A–15A balance](https://www.lazada.co.th/products/bms-2s-3a-74v-2s-6a-74v-2s-9a-74v-2s-12a-74v-2s-15a-74v-2s-18650-li-ion-lifepo4-i3271679581.html) · теги: [bms-18650-2s](https://www.lazada.co.th/tag/bms-18650-2s/) |
-| Драйвер моторов (дуал, MOSFET) | [Dual H-bridge IRF3205 30A (Lazada)](https://www.lazada.co.th/products/dual-motor-driver-module-board-h-bridge-dc-mosfet-irf3205-3-36v-10a-peak30a-dc-motor-driver-board-with-brake-function-electrical-circuitry-parts-i4778854650.html) · запрос: `DBH-12` / `dual BTS7960 30A` / `Cytron MDD10A` |
-| Зарядка 2S | USB-C 2S charger: [Dolity Type-C BMS 2S/3S/4S charger](https://www.lazada.co.th/products/dolity-type-c-bms-2s-3s-4s-1a-2a-4a-18650-lithium-battery-charger-board-usb-c-i5257506768.html) (бери **2S4A**) · хобби: [iMAX B3 (теги)](https://www.lazada.co.th/tag/%E0%B8%97%E0%B8%B5%E0%B9%88%E0%B8%8A%E0%B8%B2%E0%B8%A3%E0%B9%8C%E0%B8%88%E0%B9%81%E0%B8%9A%E0%B8%95lipo/) |
-| Токовый мониторинг | запрос: `INA3221 module` / `INA226 module` / `INA260` |
-| TVS-диод | запрос: `SMBJ16A TVS diode` / `TVS diode 16V 18V` |
-| Флайбэк-диоды | запрос: `SS54 schottky` / `1N5408 diode` |
-| Предохранитель | запрос: `blade fuse holder 20A` / `inline fuse holder` |
-| DC-DC 5В | запрос: `LM2596 buck` / `DC-DC step down 5V 3A` |
+| Позиция | Ссылка-поиск (Lazada) | Что выбрать |
+|---|---|---|
+| **BMS 2S 25A balance** ⭐ | [/catalog?q=2S BMS 25A balance](https://www.lazada.co.th/catalog/?q=2S%20BMS%2025A%20balance) | 2S, **25A**, common-port, «balance»; не «20A» (=13A), не DW01 |
+| Драйвер моторов (дуал MOSFET) | [/catalog?q=DBH-12 dual BTS7960](https://www.lazada.co.th/catalog/?q=DBH-12%20dual%20BTS7960) · [Cytron MDD10A](https://www.lazada.co.th/catalog/?q=Cytron%20MDD10A) | дуал, ≥10A/канал, PWM+DIR |
+| Зарядка 2S | [/catalog?q=2S charger balance](https://www.lazada.co.th/catalog/?q=2S%20charger%20balance) · [iMAX B3](https://www.lazada.co.th/catalog/?q=imax%20b3) | USB-C «2S4A» или iMAX B3 (балансир) |
+| Токовый мониторинг | [/catalog?q=INA3221](https://www.lazada.co.th/catalog/?q=INA3221) · [INA226](https://www.lazada.co.th/catalog/?q=INA226) | 3-канальный INA3221 |
+| TVS-диод | [/catalog?q=SMBJ16A TVS](https://www.lazada.co.th/catalog/?q=SMBJ16A%20TVS) | standoff ~16–18 В |
+| Флайбэк-диоды | [/catalog?q=SS54 schottky](https://www.lazada.co.th/catalog/?q=SS54%20schottky) | Schottky на ток мотора |
+| Предохранитель | [/catalog?q=blade fuse holder 20A](https://www.lazada.co.th/catalog/?q=blade%20fuse%20holder%2020A) | держатель + 15–20 А |
+| DC-DC 5В | [/catalog?q=LM2596 buck](https://www.lazada.co.th/catalog/?q=LM2596%20buck) | step-down 5 В, ≥3 А |
 
-**Поисковые запросы (точные):**
-- Англ.: `2S BMS 25A balance` · `2S 25A BMS common port balanced 8.4V 18650` · `Daly BMS 2S` · `HX-2S-D20`
+**Точные запросы (если ссылки не открылись — вбей вручную):**
+- Англ.: `2S BMS 25A balance` · `2S 25A BMS common port balanced 8.4V 18650` · `Daly BMS 2S` · `HX-2S-D20` · `DBH-12` · `INA3221`
 - Тайск.: `บอร์ดป้องกันแบตเตอรี่ 2S บาลานซ์` · `BMS 2S 20A สมดุล`
-- Чтобы НЕ попасть на зарядку: добавляй `protection board` / `บอร์ดป้องกัน` + `balance`; отсекай
-  `Type-C`, `charger`, `TP5100`, `boost`, `USB`.
+- Чтобы НЕ попасть на зарядку вместо защиты: добавляй `protection board` / `บอร์ดป้องกัน` + `balance`;
+  отсекай `Type-C`, `charger`, `TP5100`, `boost`, `USB`.
 
 ## Чек-лист сборки питания
 
@@ -138,6 +140,7 @@ TVS, ложные срабатывания КЗ на бросках моторо
 
 ---
 
-*Достоверность: ссылки Lazada найдены через поиск (страницы отдают 403 ботам — проверяй наличие/цену/
-вариант сам, особенно ток BMS — бери 25A, а не «20A»=13A). Пороги/спеки кросс-сверены по datasheet'ам
-и форумам. Не путать protection-BMS с зарядным модулем.*
+*Достоверность: ссылки Lazada даны как **поиски** (`/catalog?q=…`) — домен `lazada.co.th` заблокирован
+сетевой политикой окружения, прямые товары отсюда не проверить; открывай в своём браузере и проверяй
+наличие/цену/вариант (особенно ток BMS — бери 25A, а не «20A»=13A). Пороги/спеки кросс-сверены по
+datasheet'ам и форумам. Не путать protection-BMS с зарядным модулем.*
