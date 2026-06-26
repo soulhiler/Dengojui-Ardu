@@ -82,8 +82,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 28u;
-static constexpr char kXiaoFwVersion[] = "1.5.2";
+static constexpr uint32_t kXiaoFwBuild = 29u;
+static constexpr char kXiaoFwVersion[] = "1.5.3";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -98,6 +98,9 @@ static constexpr uint32_t kWifiStaRetryMs = 1600;
 
 /** Последний код отключения STA (wifi_err_reason_t), из ARDUINO_EVENT_WIFI_STA_DISCONNECTED. */
 static int g_wifiLastDiscReason = 0;
+/** Режим «только точка»: STA отпущена, всё радио — SoftAP (быстрее прямое подключение
+ *  телефона, без дележа эфира с домашним WiFi). Переключается /control?apmode=0|1. */
+static bool gApOnly = false;
 /** Период строки телеметрии в Serial (мс). */
 static constexpr uint32_t kTelemetrySerialMs = 1500;
 
@@ -1099,6 +1102,17 @@ static void handleControl() {
     xiaoDriveSetEnabled(server.arg("drive").toInt() != 0);
   }
 #endif
+  if (server.hasArg("apmode")) {
+    /* apmode=1 — «только точка»: отпустить STA, всё радио отдать SoftAP (быстрее прямое
+       подключение). apmode=0 — вернуть AP+STA (домашний WiFi подхватит wifiMaintainSta). */
+    gApOnly = server.arg("apmode").toInt() != 0;
+    if (gApOnly) {
+      WiFi.disconnect(false, false);  // отпустить STA; WiFi/точку не выключаем — телефон не отвалится
+      Serial.println(F("WiFi: ТОЛЬКО ТОЧКА (STA отпущена, всё радио — SoftAP)"));
+    } else {
+      Serial.println(F("WiFi: AP+STA (возвращаю домашний WiFi)"));
+    }
+  }
 
   String j = F("{\"ok\":1,\"ctrl_cam\":");
   j += gCtrlCamEnabled ? F("1") : F("0");
@@ -1128,6 +1142,8 @@ static void handleControl() {
   j += xiaoTofProfileStr();
   j += F("\",\"tof_auto\":");
   j += xiaoTofAutoOn() ? F("1") : F("0");
+  j += F(",\"ap_only\":");
+  j += gApOnly ? F("1") : F("0");
   j += F("}");
   server.sendHeader(F("Cache-Control"), F("no-store"));
   server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
@@ -1323,6 +1339,9 @@ static void wifiOnArduinoEvent(arduino_event_id_t event, arduino_event_info_t in
 
 /** Поддержка STA: при обрыве снова пробуем сети из WiFiMulti (короткие run, чтобы loop и HTTP не подвисали). */
 static void wifiMaintainSta() {
+  if (gApOnly) {
+    return;  // режим «только точка»: STA намеренно отпущена, не тащим обратно
+  }
   if (WiFi.getMode() == WIFI_MODE_NULL) {
     return;
   }
