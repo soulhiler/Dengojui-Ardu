@@ -38,6 +38,8 @@ class MainActivity : AppCompatActivity() {
     private var driveInfo = ""
     private var micOn = false
     private var host: String = ""
+    /** true, пока подключены к SoftAP робота в режиме «только точка» (apmode=1). */
+    private var apOnlyActive = false
 
     /** Мощность джойстика 40..255 и скважность «пения» 10..100 % — как слайдеры в веб-дашборде. */
     private var joyPower = 180
@@ -398,7 +400,8 @@ class MainActivity : AppCompatActivity() {
         drive.enableBoard(h)
         // Прямое к SoftAP (192.168.4.1) → «только точка» (всё радио телефону, меньше лага);
         // обычное подключение → AP+STA (робот на домашнем WiFi).
-        drive.control(h, "apmode", h == "192.168.4.1")
+        apOnlyActive = h == "192.168.4.1"
+        drive.control(h, "apmode", apOnlyActive)
         mjpeg.start(h)
         drive.startSending(h)
         telemetry.start(h)
@@ -420,6 +423,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun disconnectAll() {
+        // Возврат робота в AP+STA (домашний WiFi) — пока ещё на его точке и привязка к Wi-Fi жива.
+        if (apOnlyActive && host.isNotEmpty()) {
+            drive.control(host, "apmode", false)
+            apOnlyActive = false
+        }
         discovery.stop()
         WifiBinder.unbind(this)          // вернуть обычную маршрутизацию
         connected = false
