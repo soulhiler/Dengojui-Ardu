@@ -82,8 +82,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 29u;
-static constexpr char kXiaoFwVersion[] = "1.5.3";
+static constexpr uint32_t kXiaoFwBuild = 30u;
+static constexpr char kXiaoFwVersion[] = "1.5.4";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
