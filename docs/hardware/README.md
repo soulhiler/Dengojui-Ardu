@@ -32,6 +32,9 @@
 - [**Голосовые модули**](voice-modules-2026.md) — голосовой стек для робота (захват→STT→понимание→TTS)
   и где что работает (ESP32/Pi/Jetson/облако): микрофонные массивы (reSpeaker/XVF3800), оффлайн-команды
   (ESP-SR, SEN0539), STT (Vosk/whisper), TTS (Piper), LLM-диалог; ⚠️ русский — только на Pi.
+- [**LLM-«сознание» робота**](llm-brain-2026.md) — диалог + управление телом через LLM (embodied agent):
+  облачный мозг (gpt-realtime/Gemini Live + MCP-tools, ~200–300 мс) vs локальный (Jetson Orin Nano:
+  Whisper+LLM 3B+Piper, ~3–4 с, оффлайн); зрение (VLM), память/персона, ⚠️ слой безопасности команд.
 
 ## Рассмотренные платы
 
