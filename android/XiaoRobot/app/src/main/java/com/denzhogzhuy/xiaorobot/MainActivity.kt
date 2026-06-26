@@ -75,7 +75,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnSoftAp.setOnClickListener { connectSoftAp() }
         binding.btnStop.setOnClickListener { sendStop() }
         binding.btnMic.setOnClickListener { toggleMic() }
-        binding.btnUpdate.setOnClickListener { askUpdateHost() }
+        // «Обновить» — из GitHub-релиза apk-latest (по сети, без ПК). Долгое нажатие —
+        // запасной путь: обновление с ПК-дашборда в LAN (askUpdateHost).
+        binding.btnUpdate.setOnClickListener { updater.checkGithubAndInstall(lifecycleScope) }
+        binding.btnUpdate.setOnLongClickListener { askUpdateHost(); true }
 
         bindJoystick(binding.joystick)
         bindJoystick(binding.joystickOverlay)
@@ -408,18 +411,11 @@ class MainActivity : AppCompatActivity() {
      * и сравниваем версии. Есть новее — качаем и зовём установщик; нет ПК — молчим.
      */
     private fun autoCheckUpdate() {
+        // Тихая авто-проверка из GitHub-релиза (если есть интернет). На SoftAP без инета
+        // молча не сработает — это нормально.
         binding.root.postDelayed({
             if (!connected) return@postDelayed
-            discovery.find(
-                timeoutMs = 5000L,
-                onFound = { ip, port ->
-                    val h = "$ip:${if (port > 0) port else 8897}"
-                    prefs.edit().putString("upd_host", h).apply()
-                    updater.checkAndInstall(h, lifecycleScope, quiet = true)
-                },
-                onFail = { /* ПК не в сети — обычное дело, не шумим */ },
-                nameFilter = "xiao-dash",
-            )
+            updater.checkGithubAndInstall(lifecycleScope, quiet = true)
         }, 2500L)
     }
 
