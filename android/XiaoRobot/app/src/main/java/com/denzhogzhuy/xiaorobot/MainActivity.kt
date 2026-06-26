@@ -393,6 +393,9 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putString("last_ip", h).apply()
         drive.token = prefs.getString("api_token", "") ?: ""
         drive.enableBoard(h)
+        // Прямое к SoftAP (192.168.4.1) → «только точка» (всё радио телефону, меньше лага);
+        // обычное подключение → AP+STA (робот на домашнем WiFi).
+        drive.control(h, "apmode", h == "192.168.4.1")
         mjpeg.start(h)
         drive.startSending(h)
         telemetry.start(h)
