@@ -403,6 +403,8 @@ class MainActivity : AppCompatActivity() {
         // обычное подключение → AP+STA (робот на домашнем WiFi).
         apOnlyActive = h == "192.168.4.1"
         drive.control(h, "apmode", apOnlyActive)
+        // На прямой точке (узкая полоса) — лёгкий видеопоток QVGA; по дому — SVGA.
+        drive.control(h, "vsize", if (apOnlyActive) "qvga" else "svga")
         mjpeg.start(h)
         drive.startSending(h)
         telemetry.start(h)
