@@ -82,8 +82,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 30u;
-static constexpr char kXiaoFwVersion[] = "1.5.4";
+static constexpr uint32_t kXiaoFwBuild = 31u;
+static constexpr char kXiaoFwVersion[] = "1.5.5";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -1111,6 +1111,29 @@ static void handleControl() {
       Serial.println(F("WiFi: ТОЛЬКО ТОЧКА (STA отпущена, всё радио — SoftAP)"));
     } else {
       Serial.println(F("WiFi: AP+STA (возвращаю домашний WiFi)"));
+    }
+  }
+  /* Профиль видеопотока: на AP полоса узкая → мельче кадр. vsize=qvga|vga|svga|hd, vq=8..30.
+     Меняем под мьютексом камеры (не пересечься со стримом/capture). */
+  if (server.hasArg("vsize") || server.hasArg("vq")) {
+    sensor_t *cs = esp_camera_sensor_get();
+    if (cs) {
+      const bool locked = gCamMutex && xSemaphoreTake(gCamMutex, pdMS_TO_TICKS(500)) == pdTRUE;
+      if (server.hasArg("vsize")) {
+        const String v = server.arg("vsize");
+        framesize_t fs = FRAMESIZE_SVGA;
+        if (v == "qvga") fs = FRAMESIZE_QVGA;
+        else if (v == "vga") fs = FRAMESIZE_VGA;
+        else if (v == "hd") fs = FRAMESIZE_HD;
+        cs->set_framesize(cs, fs);
+        Serial.print(F("cam framesize -> ")); Serial.println(v);
+      }
+      if (server.hasArg("vq")) {
+        int q = server.arg("vq").toInt();
+        q = q < 8 ? 8 : (q > 30 ? 30 : q);
+        cs->set_quality(cs, q);
+      }
+      if (locked) xSemaphoreGive(gCamMutex);
     }
   }
 

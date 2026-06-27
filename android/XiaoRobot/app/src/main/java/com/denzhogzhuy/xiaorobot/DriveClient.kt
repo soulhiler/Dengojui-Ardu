@@ -53,6 +53,13 @@ class DriveClient(private val scope: CoroutineScope) {
         }
     }
 
+    /** Управление со строковым значением (например /control?vsize=qvga — профиль видео). */
+    fun control(host: String, key: String, value: String) {
+        scope.launch(Dispatchers.IO) {
+            get("http://$host/control?$key=$value")
+        }
+    }
+
     /** Гудок, как кнопка «Beep A» в вебе. gain — скважность «голоса» 10..100 %. */
     fun beep(host: String, gain: Int) {
         scope.launch(Dispatchers.IO) {
