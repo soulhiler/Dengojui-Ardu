@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
             updateStatusLine()
         },
         onJson = ::onTelemetryJson,
+        busy = { drive.cmdL != 0 || drive.cmdR != 0 },   // едем → не дёргаем тяжёлую /telemetry
     )
 
     private val discovery by lazy { BoardDiscovery(this, ::setStatusPart) }

@@ -15,6 +15,9 @@ class TelemetryPoller(
     private val scope: CoroutineScope,
     private val onInfo: (wifiChannel: Int, rssi: Int, ssid: String) -> Unit,
     private val onJson: (JSONObject) -> Unit = {},
+    // Во время езды НЕ опрашиваем: /telemetry тяжёлая (~150 мс) и на однопоточном сервере
+    // платы блокирует /drive → рывки. busy()==true (джойстик активен) → пропускаем опрос.
+    private val busy: () -> Boolean = { false },
 ) {
     private var job: Job? = null
 
@@ -22,6 +25,10 @@ class TelemetryPoller(
         stop()
         job = scope.launch(Dispatchers.IO) {
             while (isActive) {
+                if (busy()) {
+                    delay(400)
+                    continue
+                }
                 try {
                     val c = (URL("http://$host/telemetry").openConnection() as HttpURLConnection).apply {
                         connectTimeout = 4000

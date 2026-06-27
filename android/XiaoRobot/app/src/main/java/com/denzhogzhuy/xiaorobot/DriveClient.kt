@@ -78,12 +78,15 @@ class DriveClient(private val scope: CoroutineScope) {
                 connectTimeout = 3000
                 readTimeout = 3000
                 requestMethod = "GET"
+                setRequestProperty("Connection", "keep-alive")
                 if (token.isNotEmpty()) setRequestProperty("X-Auth-Token", token)
             }
+            // Дочитываем тело полностью → соединение возвращается в пул и ПЕРЕИСПОЛЬЗУЕТСЯ
+            // (keep-alive): ровно ~31 мс вместо нового TCP на каждую команду (рывки до 134 мс).
+            // НЕ вызываем disconnect() на успехе — иначе пул не работает.
             c.inputStream.use { it.readBytes() }
         } catch (_: Exception) {
-        } finally {
-            c?.disconnect()
+            c?.disconnect()   // битое соединение — выкинуть из пула
         }
     }
 }
