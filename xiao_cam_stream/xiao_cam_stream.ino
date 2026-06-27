@@ -82,8 +82,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 32u;
-static constexpr char kXiaoFwVersion[] = "1.5.6";
+static constexpr uint32_t kXiaoFwBuild = 33u;
+static constexpr char kXiaoFwVersion[] = "1.5.7";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -445,13 +445,15 @@ static void streamTcpTask(void * /*arg*/) {
       c.stop();
       continue;
     }
-    /* Если робот доступен ТОЛЬКО через свою точку (AP-only или дом. WiFi не подключён) —
-       полоса узкая → лёгкий кадр автоматически. Так и веб-страница робота, и приложение
-       получают мелкий поток без лагов; на домашнем WiFi — обычный SVGA. */
+    /* Лёгкий кадр решаем по АДРЕСУ клиента: пришёл из подсети нашей точки (192.168.4.x) —
+       полоса узкая → QVGA; из домашней сети — полный SVGA. Раньше смотрели глобально на STA,
+       и телефон на точке при живом домашнем WiFi получал тяжёлый кадр (видео не грузилось). */
     {
-      const bool wantLite = gApOnly || WiFi.status() != WL_CONNECTED;
-      if (wantLite != gCamLite) {
-        xiaoCamApplyProfile(wantLite);
+      const IPAddress rip = c.remoteIP();
+      const IPAddress apip = WiFi.softAPIP();
+      const bool viaAp = (rip[0] == apip[0] && rip[1] == apip[1] && rip[2] == apip[2]);
+      if (viaAp != gCamLite) {
+        xiaoCamApplyProfile(viaAp);
       }
     }
     c.print(F("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n"
