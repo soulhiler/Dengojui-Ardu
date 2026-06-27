@@ -82,8 +82,8 @@
 #endif
 
 /** Версия прошивки (репозиторий): увеличивай `kXiaoFwBuild` при каждом релизе / OTA; `kXiaoFwVersion` — для людей. */
-static constexpr uint32_t kXiaoFwBuild = 31u;
-static constexpr char kXiaoFwVersion[] = "1.5.5";
+static constexpr uint32_t kXiaoFwBuild = 32u;
+static constexpr char kXiaoFwVersion[] = "1.5.6";
 
 #ifndef XIAO_WIFI_SSID_1
 #define XIAO_WIFI_SSID_1 "дуангдихауз 2"
@@ -400,6 +400,25 @@ static void camFbReturnLocked(camera_fb_t *fb) {
   }
 }
 
+/** Профиль камеры. lite — узкая полоса SoftAP: мелкий кадр (QVGA) + сильнее сжатие.
+ *  full — обычный (SVGA). Меняем под мьютексом, чтобы не пересечься со стримом/capture. */
+static volatile bool gCamLite = false;
+static void xiaoCamApplyProfile(bool lite) {
+  sensor_t *cs = esp_camera_sensor_get();
+  if (!cs) {
+    return;
+  }
+  const bool locked = gCamMutex && xSemaphoreTake(gCamMutex, pdMS_TO_TICKS(500)) == pdTRUE;
+  cs->set_framesize(cs, lite ? FRAMESIZE_QVGA : FRAMESIZE_SVGA);
+  cs->set_quality(cs, lite ? 15 : 12);
+  if (locked) {
+    xSemaphoreGive(gCamMutex);
+  }
+  gCamLite = lite;
+  Serial.print(F("cam профиль -> "));
+  Serial.println(lite ? F("lite QVGA (только точка)") : F("full SVGA"));
+}
+
 static void streamTcpTask(void * /*arg*/) {
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
@@ -425,6 +444,15 @@ static void streamTcpTask(void * /*arg*/) {
                 "Connection: close\r\n\r\ncamera off\n"));
       c.stop();
       continue;
+    }
+    /* Если робот доступен ТОЛЬКО через свою точку (AP-only или дом. WiFi не подключён) —
+       полоса узкая → лёгкий кадр автоматически. Так и веб-страница робота, и приложение
+       получают мелкий поток без лагов; на домашнем WiFi — обычный SVGA. */
+    {
+      const bool wantLite = gApOnly || WiFi.status() != WL_CONNECTED;
+      if (wantLite != gCamLite) {
+        xiaoCamApplyProfile(wantLite);
+      }
     }
     c.print(F("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n"
               "Content-Type: multipart/x-mixed-replace; boundary=mjpeg\r\n\r\n"));
